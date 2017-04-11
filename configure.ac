@@ -151,7 +151,7 @@ AC_ARG_WITH([pcre],
 )
 
 AS_IF([test "x$WITH_PCRE" == "xyes"], [
-	AC_CHECK_HEADER([pcre.h], [], [
+	AC_CHECK_HEADER([pcre/pcre.h], [], [
 	    AC_MSG_ERROR([ You need libpcre development files installed to compile with pcre support.])
 	])
 	AC_CHECK_LIB([pcre], [pcre_exec], [], [

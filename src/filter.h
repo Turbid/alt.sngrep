@@ -42,7 +42,7 @@
 
 #include "config.h"
 #ifdef WITH_PCRE
-#include <pcre.h>
+#include <pcre/pcre.h>
 #else
 #include <regex.h>
 #endif

@@ -36,7 +36,7 @@
 #include <stdbool.h>
 #include <regex.h>
 #ifdef WITH_PCRE
-#include <pcre.h>
+#include <pcre/pcre.h>
 #endif
 #include "sip_call.h"
 #include "vector.h"
