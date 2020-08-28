@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -54,6 +54,7 @@ sip_code_t sip_codes[] = {
     { SIP_METHOD_NOTIFY,    "NOTIFY" },
     { SIP_METHOD_OPTIONS,   "OPTIONS" },
     { SIP_METHOD_PUBLISH,   "PUBLISH" },
+    { SIP_METHOD_KDMQ,      "KDMQ" },
     { SIP_METHOD_MESSAGE,   "MESSAGE" },
     { SIP_METHOD_CANCEL,    "CANCEL" },
     { SIP_METHOD_BYE,       "BYE" },
@@ -139,7 +140,9 @@ sip_code_t sip_codes[] = {
 void
 sip_init(int limit, int only_calls, int no_incomplete)
 {
-    int match_flags;
+    int match_flags, reg_rule_len, reg_rule_err;
+    char reg_rule[SIP_ATTR_MAXLEN];
+    const char *setting = NULL;
 
     // Store capture limit
     calls.limit = limit;
@@ -168,15 +171,33 @@ sip_init(int limit, int only_calls, int no_incomplete)
 
     // Initialize payload parsing regexp
     match_flags = REG_EXTENDED | REG_ICASE | REG_NEWLINE;
-    regcomp(&calls.reg_method, "^([a-zA-Z]+) [a-zA-Z]+:[^ ]+ SIP/2.0\r", match_flags & ~REG_NEWLINE);
-    regcomp(&calls.reg_callid, "^(Call-ID|i):[ ]*([^ ]+)\r$", match_flags);
-    regcomp(&calls.reg_xcallid, "^(X-Call-ID|X-CID):[ ]*([^ ]+)\r$", match_flags);
-    regcomp(&calls.reg_response, "^SIP/2.0[ ]*(([0-9]{3}) [^\r]*)\r", match_flags & ~REG_NEWLINE);
-    regcomp(&calls.reg_cseq, "^CSeq:[ ]*([0-9]+) .+\r$", match_flags);
-    regcomp(&calls.reg_from, "^(From|f):[ ]*[^:]*:(([^@]+)@?[^\r>;]+)", match_flags);
-    regcomp(&calls.reg_to, "^(To|t):[ ]*[^:]*:(([^@]+)@?[^\r>;]+)", match_flags);
+    regcomp(&calls.reg_method, "^([a-zA-Z]+) [a-zA-Z]+:.+ SIP/2.0[ ]*\r", match_flags & ~REG_NEWLINE);
+    regcomp(&calls.reg_callid, "^(Call-ID|i):[ ]*([^ ]+)[ ]*\r$", match_flags);
+    setting = setting_get_value(SETTING_SIP_HEADER_X_CID);
+    reg_rule_len = strlen(setting) + 22;
+    if (reg_rule_len >= SIP_ATTR_MAXLEN) {
+        setting = "X-Call-ID|X-CID";
+        reg_rule_len = strlen(setting) + 22;
+        fprintf(stderr, "%s setting too long, using default.\n",
+            setting_name(SETTING_SIP_HEADER_X_CID));
+    }
+    snprintf(reg_rule, reg_rule_len, "^(%s):[ ]*([^ ]+)[ ]*\r$", setting);
+    reg_rule_err = regcomp(&calls.reg_xcallid, reg_rule, match_flags);
+    if(reg_rule_err != 0) {
+        regerror(reg_rule_err, &calls.reg_xcallid, reg_rule, SIP_ATTR_MAXLEN);
+        regfree(&calls.reg_xcallid);
+        fprintf(stderr, "%s setting produces regex compilation error: %s"
+            "using default value instead\n",
+            setting_name(SETTING_SIP_HEADER_X_CID), reg_rule);
+        regcomp(&calls.reg_xcallid,
+            "^(X-Call-ID|X-CID):[ ]*([^ ]+)[ ]*\r$", match_flags);
+    }
+    regcomp(&calls.reg_response, "^SIP/2.0[ ]*(([0-9]{3}) [^\r]*)[ ]*\r", match_flags & ~REG_NEWLINE);
+    regcomp(&calls.reg_cseq, "^CSeq:[ ]*([0-9]{1,10}) .+\r$", match_flags);
+    regcomp(&calls.reg_from, "^(From|f):[ ]*[^:]*:(([^@>]+)@?[^\r>;]+)", match_flags);
+    regcomp(&calls.reg_to, "^(To|t):[ ]*[^:]*:(([^@>]+)@?[^\r>;]+)", match_flags);
     regcomp(&calls.reg_valid, "^([A-Z]+ [a-zA-Z]+:|SIP/2.0 [0-9]{3})", match_flags & ~REG_NEWLINE);
-    regcomp(&calls.reg_cl, "^(Content-Length|l):[ ]*([0-9]+)\r$", match_flags);
+    regcomp(&calls.reg_cl, "^(Content-Length|l):[ ]*([0-9]+)[ ]*\r$", match_flags);
     regcomp(&calls.reg_body, "\r\n\r\n(.*)", match_flags & ~REG_NEWLINE);
     regcomp(&calls.reg_reason, "Reason:[ ]*[^\r]*;text=\"([^\r]+)\"", match_flags);
     regcomp(&calls.reg_warning, "Warning:[ ]*([0-9]*)", match_flags);
@@ -246,7 +267,7 @@ sip_validate_packet(packet_t *packet)
     int content_len;
     int bodylen;
 
-        // Max SIP payload allowed
+    // Max SIP payload allowed
     if (plen == 0 || plen > MAX_SIP_PAYLOAD)
         return VALIDATE_NOT_SIP;
 
@@ -281,7 +302,24 @@ sip_validate_packet(packet_t *packet)
     // Get the SIP message body length
     bodylen = (int) pmatch[1].rm_eo - pmatch[1].rm_so;
 
-    return (content_len == bodylen) ? VALIDATE_COMPLETE_SIP : VALIDATE_PARTIAL_SIP;
+    // The SDP body of the SIP message ends in another packet
+    if (content_len > bodylen) {
+        return VALIDATE_PARTIAL_SIP;
+    }
+
+    if (content_len < bodylen) {
+        // Check body ends with '\r\n'
+        if (payload[pmatch[1].rm_so + content_len - 1] != '\n')
+            return VALIDATE_NOT_SIP;
+        if (payload[pmatch[1].rm_so + content_len - 2] != '\r')
+            return VALIDATE_NOT_SIP;
+        // We got more than one SIP message in the same packet
+        packet_set_payload(packet, payload, pmatch[1].rm_so + content_len);
+        return VALIDATE_MULTIPLE_SIP;
+    }
+
+    // We got all the SDP body of the SIP message
+    return VALIDATE_COMPLETE_SIP;
 }
 
 sip_msg_t *
@@ -458,6 +496,12 @@ sip_calls_vector()
     return calls.list;
 }
 
+vector_t *
+sip_active_calls_vector()
+{
+    return calls.active;
+}
+
 sip_stats_t
 sip_calls_stats()
 {
@@ -488,8 +532,8 @@ int
 sip_get_msg_reqresp(sip_msg_t *msg, const u_char *payload)
 {
     regmatch_t pmatch[3];
-    char resp_str[256];
-    char reqresp[40];
+    char resp_str[SIP_ATTR_MAXLEN];
+    char reqresp[SIP_ATTR_MAXLEN];
     char cseq[11];
     const char *resp_def;
 
@@ -503,7 +547,11 @@ sip_get_msg_reqresp(sip_msg_t *msg, const u_char *payload)
 
         // Method & CSeq
         if (regexec(&calls.reg_method, (const char *)payload, 2, pmatch, 0) == 0) {
-            sprintf(reqresp, "%.*s", (int)(pmatch[1].rm_eo - pmatch[1].rm_so), payload + pmatch[1].rm_so);
+            if ((int)(pmatch[1].rm_eo - pmatch[1].rm_so) >= SIP_ATTR_MAXLEN) {
+                strncpy(reqresp, "<malformed>", 11);
+            } else {
+                sprintf(reqresp, "%.*s", (int) (pmatch[1].rm_eo - pmatch[1].rm_so), payload + pmatch[1].rm_so);
+            }
         }
 
         // CSeq
@@ -515,8 +563,16 @@ sip_get_msg_reqresp(sip_msg_t *msg, const u_char *payload)
 
         // Response code
         if (regexec(&calls.reg_response, (const char *)payload, 3, pmatch, 0) == 0) {
-            sprintf(resp_str, "%.*s", (int)(pmatch[1].rm_eo - pmatch[1].rm_so), payload + pmatch[1].rm_so);
-            sprintf(reqresp, "%.*s", (int)(pmatch[2].rm_eo - pmatch[2].rm_so), payload + pmatch[2].rm_so);
+            if ((int)(pmatch[1].rm_eo - pmatch[1].rm_so) >= SIP_ATTR_MAXLEN) {
+                strncpy(resp_str, "<malformed>", 11);
+            } else {
+                sprintf(resp_str, "%.*s", (int) (pmatch[1].rm_eo - pmatch[1].rm_so), payload + pmatch[1].rm_so);
+            }
+            if ((int)(pmatch[2].rm_eo - pmatch[2].rm_so) >= SIP_ATTR_MAXLEN) {
+                strncpy(resp_str, "<malformed>", 11);
+            } else {
+                sprintf(reqresp, "%.*s", (int) (pmatch[2].rm_eo - pmatch[2].rm_so), payload + pmatch[2].rm_so);
+            }
         }
 
         // Get Request/Response Code
@@ -618,7 +674,8 @@ sip_parse_msg_media(sip_msg_t *msg, const u_char *payload)
     while ((line = strsep(&payload2, "\r\n")) != NULL) {
         // Check if we have a media string
         if (!strncmp(line, "m=", 2)) {
-            if (sscanf(line, "m=%s %hu RTP/%*s %u", media_type, &dst.port, &media_fmt_pref) == 3) {
+            if (sscanf(line, "m=%s %hu RTP/%*s %u", media_type, &dst.port, &media_fmt_pref) == 3
+            ||  sscanf(line, "m=%s %hu UDP/%*s %u", media_type, &dst.port, &media_fmt_pref) == 3) {
 
                 // Add streams from previous 'm=' line to the call
                 ADD_STREAM(msg_rtp_stream);
@@ -665,7 +722,7 @@ sip_parse_msg_media(sip_msg_t *msg, const u_char *payload)
 
         // Check if we have attribute format string
         if (!strncmp(line, "a=rtpmap:", 9)) {
-            if (media && sscanf(line, "a=rtpmap:%u %[^ ]", &media_fmt_code, media_format)) {
+            if (media && sscanf(line, "a=rtpmap:%u %30[^ ]", &media_fmt_code, media_format)) {
                 media_add_format(media, media_fmt_code, media_format);
             }
         }
@@ -713,9 +770,31 @@ sip_calls_clear()
     // Create again the callid hash table
     htable_destroy(calls.callids);
     calls.callids = htable_create(calls.limit);
+
     // Remove all items from vector
     vector_clear(calls.list);
     vector_clear(calls.active);
+}
+
+void
+sip_calls_clear_soft()
+{
+        // Create again the callid hash table
+        htable_destroy(calls.callids);
+        calls.callids = htable_create(calls.limit);
+
+        // Repopulate list applying current filter
+        calls.list = vector_copy_if(sip_calls_vector(), filter_check_call);
+        calls.active = vector_copy_if(sip_active_calls_vector(), filter_check_call);
+
+        // Repopulate callids based on filtered list
+        sip_call_t *call;
+        vector_iter_t it = vector_iterator(calls.list);
+
+        while ((call = vector_iterator_next(&it)))
+        {
+                htable_insert(calls.callids, call->callid, call);
+        }
 }
 
 void
@@ -746,7 +825,7 @@ sip_set_match_expression(const char *expr, int insensitive, int invert)
 #ifdef WITH_PCRE
     const char *re_err = NULL;
     int32_t err_offset;
-    int32_t pflags = PCRE_UNGREEDY;
+    int32_t pflags = PCRE_UNGREEDY | PCRE_DOTALL;
 
     if (insensitive)
         pflags |= PCRE_CASELESS;
@@ -849,7 +928,11 @@ sip_get_msg_header(sip_msg_t *msg, char *out)
     msg_get_attribute(msg, SIP_ATTR_DST, to_addr);
 
     // Get msg header
-    sprintf(out, "%s %s %s -> %s", date, time, from_addr, to_addr);
+    if (setting_enabled(SETTING_DISPLAY_ALIAS)) {
+        sprintf(out, "%s %s %s -> %s", date, time, get_alias_value(from_addr), get_alias_value(to_addr));
+    } else {
+        sprintf(out, "%s %s %s -> %s", date, time, from_addr, to_addr);
+    }
     return out;
 }
 
@@ -892,13 +975,6 @@ sip_list_sorter(vector_t *vector, void *item)
     // First item is alway sorted
     if (vector_count(vector) == 1)
         return;
-
-    prev = vector_item(vector, vector_count(vector) - 2);
-
-    // Check if the item is already sorted
-    if (call_attr_compare(cur, prev, calls.sort.by) == 0) {
-        return;
-    }
 
     for (i = count - 2 ; i >= 0; i--) {
         // Get previous item

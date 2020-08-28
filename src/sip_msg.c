@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -135,14 +135,14 @@ msg_get_attribute(sip_msg_t *msg, int id, char *value)
             sprintf(value, "%.*s", SIP_ATTR_MAXLEN, msg->sip_to);
             break;
         case SIP_ATTR_SIPFROMUSER:
-            sprintf(value, "%.*s", SIP_ATTR_MAXLEN, msg->sip_from);
-            if ((ar = strchr(value, '@')))
-                *ar = '\0';
+            if ((ar = strchr(msg->sip_from, '@'))) {
+                strncpy(value, msg->sip_from, ar - msg->sip_from);
+            }
             break;
         case SIP_ATTR_SIPTOUSER:
-            sprintf(value, "%.*s", SIP_ATTR_MAXLEN, msg->sip_to);
-            if ((ar = strchr(value, '@')))
-                *ar = '\0';
+            if ((ar = strchr(msg->sip_to, '@'))) {
+                strncpy(value, msg->sip_to, ar - msg->sip_to);
+            }
             break;
         case SIP_ATTR_DATE:
             timeval_to_date(msg_get_time(msg), value);

@@ -1,3 +1,74 @@
+2020-05-21 Ivan Alonso <kaian@irontec.com>
+	* sngrep 1.4.7 released
+
+	* capture: fixed a crash with invalid CSeq values
+	* capture: allow configurable libpcap capture buffer
+	* hep: support parsing of HEPv3 headers in any order
+	* ssl: updated code to exclude depcreted OpenSSL functions
+	* call raw: add support to IP alias display
+	* call list: updated diverted Call state conditions
+	* cli: match expression now applies to whole SIP payload
+	* cli: add support to multiple comma separated capture devices
+	* sip: add KDMQ custom method to SIP parser
+
+2018-10-31 Ivan Alonso <kaian@irontec.com>
+	* sngrep 1.4.6 released
+
+	* capture: fixed pcap reading from stdin
+	* capture: make SIP regexp more tolerant to invalid uris
+	* capture: SIP dialogs can now start with INFO, REFER and UPDATE
+	* call list: Added methods and key bindings for soft clear of call list
+	* call flow: improved performance while displaying a dialog with lots of messages
+	* call flow: arrows are now sorted by time while displaying multiple dialogs
+	* ui: fixed multiples buffer overflows crashes
+	* ui: improve compatibility with newest ncurses version
+
+2018-01-19 Ivan Alonso <kaian@irontec.com>
+	* sngrep 1.4.5 released
+
+	* save: avoid crashing when multiple source inputs are used
+	* call list: fix buffer overflow in display filter with wide terminals
+	* capture: added new setting capture.tlsserver to only process TLS packets to tha address
+	* capture: fixed compatibility with OpenSSL >= 1.1.0
+	* capture: only read stdin when input file is '-'
+
+2017-09-17 Ivan Alonso <kaian@irontec.com>
+	* sngrep 1.4.4 released
+
+	* Fixed multiples crashes with SIP TCP payloads
+	* Improve configure detection for gnutls and ncurses
+	* HEP/EEP: removed default password
+	* HEP/EEP: hep capture mode is now displayed in call list window
+	* -I flag now supports reading from standard input
+	* Call List and Call Flow windows now resize properly
+
+
+2017-05-10 Ivan Alonso <kaian@irontec.com>
+	* sngrep 1.4.3 released
+
+	* Capture
+	  * Added support for capturing from multiples interfaces from command line
+	  * Fixed a bug where IP reassembly was only working whe packet only had two fragments
+	  * Fixed a bug where TCP packets where not assembled in the correct order
+
+	* HEP/EEP
+	  * Added support for UUID chunks sent by asterisk HEP PJSIP module
+
+	* SIP
+	  * Improved From/To header regexp to parse URIs without user part
+	  * SIP responses codes 600 will now set callstate to BUSY
+
+	* Call Flow
+	  * Added keybinding to deselect previously selected arrow (defaults to Ctrl+W)
+	  * Fixed a bug while displaying arrows order of a dialog from multiple input files
+
+	* Configuration
+	  * Configuration file can no be specified using environment variable SNGREPRC
+	  * Added `-F` command line option to start sngrep without reading any configuration file
+
+	* Packages/Build
+	  * OpenSSL depedencies are now being searching using pkg-config if available
+
 2016-12-19 Ivan Alonso <kaian@irontec.com>
 	* sngrep 1.4.2 released
 

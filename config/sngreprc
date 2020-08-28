@@ -26,10 +26,14 @@
 # set capture.lookup on
 
 ## Set default capture device
+# use special keyword 'any', a device name 'eth0' or a comma-separated list like 'eth1,eth3'
 # set capture.device any
 
 ## Set default dump file
 # set capture.outfile /tmp/last_capture.pcap
+
+## Set size of pcap capture buffer in MB (default: 2)
+# set capture.buffer 2
 
 ##-----------------------------------------------------------------------------
 ## Default path in save dialog
@@ -100,3 +104,7 @@
 ##-----------------------------------------------------------------------------
 ## Uncomment to display dialogs that does not start with a request method
 # set sip.noincomplete off
+
+##-----------------------------------------------------------------------------
+## Uncomment to define custom b_leg correlation header
+# set sip.xcid X-Call-ID|X-CID

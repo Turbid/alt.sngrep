@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -52,6 +52,7 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/rsa.h>
 #include "capture.h"
 
 //! Cast two bytes into decimal (Big Endian)
@@ -63,6 +64,15 @@
 //openssl 0.9.8f, and the use of if breaks builds with older openssls
 #if OPENSSL_VERSION_NUMBER < 0x00908070L
 #define OLD_OPENSSL_VERSION 1
+#endif
+
+/* LibreSSL declares OPENSSL_VERSION_NUMBER == 2.0 but does not include most
+ * changes from OpenSSL >= 1.1 (new functions, macros, deprecations, ...)
+ */
+#if defined(LIBRESSL_VERSION_NUMBER)
+#define MODSSL_USE_OPENSSL_PRE_1_1_API (1)
+#else
+#define MODSSL_USE_OPENSSL_PRE_1_1_API (OPENSSL_VERSION_NUMBER < 0x10100000L)
 #endif
 
 //! Three bytes unsigned integer
@@ -92,6 +102,25 @@ enum SSLConnectionState {
     TCP_STATE_FIN,
     //! Connection closed
     TCP_STATE_CLOSED
+};
+
+//! SSL Encoders algo
+enum SSLCipherEncoders {
+    ENC_AES         = 1,
+    ENC_AES256      = 2
+};
+
+//! SSL Digests algo
+enum SSLCIpherDigest {
+    DIG_SHA1        = 1,
+    DIG_SHA256      = 2,
+    DIG_SHA384      = 3
+};
+
+//! SSL Decode mode
+enum SSLCipherMode {
+    MODE_CBC,
+    MODE_GCM
 };
 
 //! ContentType values as defined in RFC5246
@@ -146,6 +175,16 @@ struct Random {
 struct CipherSuite {
     uint8_t cs1;
     uint8_t cs2;
+};
+
+struct CipherData {
+    int num;
+    int enc;
+    int ivblock;
+    int bits;
+    int digest;
+    int diglen;
+    int mode;
 };
 
 struct ClientHelloSSLv2 {
@@ -226,20 +265,21 @@ struct SSLConnection {
     struct Random client_random;
     struct Random server_random;
     struct CipherSuite cipher_suite;
+    struct CipherData cipher_data;
     struct PreMasterSecret pre_master_secret;
     struct MasterSecret master_secret;
 
     struct tls_data {
-        uint8_t client_write_MAC_key[20];
-        uint8_t server_write_MAC_key[20];
-        uint8_t client_write_key[32];
-        uint8_t server_write_key[32];
-        uint8_t client_write_IV[16];
-        uint8_t server_write_IV[16];
+        uint8_t *client_write_MAC_key;
+        uint8_t *server_write_MAC_key;
+        uint8_t *client_write_key;
+        uint8_t *server_write_key;
+        uint8_t *client_write_IV;
+        uint8_t *server_write_IV;
     } key_material;
 
-    EVP_CIPHER_CTX client_cipher_ctx;
-    EVP_CIPHER_CTX server_cipher_ctx;
+    EVP_CIPHER_CTX *client_cipher_ctx;
+    EVP_CIPHER_CTX *server_cipher_ctx;
 
     struct SSLConnection *next;
 };
@@ -265,24 +305,6 @@ P_hash(const char *digest, unsigned char *dest, int dlen, unsigned char *secret,
        unsigned char *seed, int slen);
 
 /**
- * @brief Pseudorandom Function as defined in RFC5246
- *
- * This function will generate MasterSecret and KeyMaterial data from PreMasterSecret and Seed
- *
- * @param dest Destination of PRF function result. Memory must be already allocated
- * @param dlen Destination length in bytes
- * @param pre_master_secret PreMasterSecret decrypted from ClientKeyExchange Handhsake record
- * @param pslen PreMasterSecret length in bytes
- * @param label Fixed ASCII string
- * @param seed Concatenation of Random data from Hello Handshake records
- * @param slen Seed length in bytes
- * @return destination length in bytes
- */
-int
-PRF12(unsigned char *dest, int dlen, unsigned char *pre_master_secret,
-        int plen, unsigned char *label, unsigned char *seed, int slen);
-
-/**
  * @brief Pseudorandom Function as defined in RFC2246
  *
  * This function will generate MasterSecret and KeyMaterial data from PreMasterSecret and Seed
@@ -297,8 +319,8 @@ PRF12(unsigned char *dest, int dlen, unsigned char *pre_master_secret,
  * @return destination length in bytes
  */
 int
-PRF(unsigned char *dest, int dlen, unsigned char *pre_master_secret, int plen, unsigned char *label,
-    unsigned char *seed, int slen);
+PRF(struct SSLConnection *conn, unsigned char *dest, int dlen, unsigned char *pre_master_secret,
+    int plen, unsigned char *label, unsigned char *seed, int slen);
 
 /**
  * @brief Create a new SSLConnection

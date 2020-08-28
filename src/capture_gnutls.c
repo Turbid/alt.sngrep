@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -359,6 +359,7 @@ tls_process_segment(packet_t *packet, struct tcphdr *tcp)
     struct in_addr ip_src, ip_dst;
     uint16_t sport = packet->src.port;
     uint16_t dport = packet->dst.port;
+    address_t tlsserver = capture_tls_server();
 
     // Convert addresses
     inet_pton(AF_INET, packet->src.ip, &ip_src);
@@ -408,7 +409,13 @@ tls_process_segment(packet_t *packet, struct tcphdr *tcp)
                 break;
         }
     } else {
-        if (tcp->th_flags & TH_SYN & ~TH_ACK) {
+        // Only create new connections whose destination is tlsserver
+        if (tlsserver.port) {
+            if (addressport_equals(tlsserver, packet->dst)) {
+                // New connection, store it status and leave
+                tls_connection_create(ip_src, sport, ip_dst, dport);
+            }
+        } else {
             // New connection, store it status and leave
             tls_connection_create(ip_src, sport, ip_dst, dport);
         }
@@ -437,8 +444,7 @@ tls_process_record_ssl2(struct SSLConnection *conn, const uint8_t *payload,
                    const int len, uint8_t **out, uint32_t *outl)
 {
     int record_len_len;
-    uint16 record_len16;
-    uint24 record_len24;
+    uint32_t record_len;
     uint8_t record_type;
     const opaque *fragment;
     int flen;
@@ -452,18 +458,18 @@ tls_process_record_ssl2(struct SSLConnection *conn, const uint8_t *payload,
 
     // Two bytes SSLv2 record length field
     if (record_len_len == 2) {
-        record_len16.x[0] = (payload[0] & 0x7f) << 8;
-        record_len16.x[1] = (payload[1]);
+        record_len = (payload[0] & 0x7f) << 8;
+        record_len += (payload[1]);
         record_type = payload[2];
         fragment = payload + 3;
-        flen = UINT16_INT(record_len16) - 1 /* record type */;
+        flen = record_len - 1 /* record type */;
     } else {
-        record_len24.x[0] = (payload[0] & 0x3f) << 8;
-        record_len24.x[1] = payload[1];
-        record_len24.x[2] = payload[2];
+        record_len = (payload[0] & 0x3f) << 8;
+        record_len += payload[1];
+        record_len += payload[2];
         record_type = payload[3];
         fragment = payload + 4;
-        flen = UINT24_INT(record_len24) - 1 /* record type */;
+        flen = record_len - 1 /* record type */;
     }
 
     // We only handle Client Hello handshake SSLv2 records
@@ -496,7 +502,7 @@ tls_process_record(struct SSLConnection *conn, const uint8_t *payload,
 
     // No record data here!
     if (len == 0)
-        return 0;
+        return 1;
 
     // Get Record data
     record = (struct TLSPlaintext *) payload;
@@ -525,7 +531,7 @@ tls_process_record(struct SSLConnection *conn, const uint8_t *payload,
                 }
                 break;
             default:
-                break;
+                return 1;
         }
     }
 

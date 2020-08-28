@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -47,11 +47,11 @@ option_opt_t options[1024];
 int optscnt = 0;
 
 int
-init_options()
+init_options(int no_config)
 {
     // Custom user conf file
-    char userconf[128];
-    char *home = getenv("HOME");
+    char *userconf = NULL;
+    char *rcfile;
     char pwd[MAX_SETTING_LEN];
 
     // Defualt savepath is current directory
@@ -60,7 +60,7 @@ init_options()
     }
 
     // Initialize settings
-    setting_set_value(SETTING_FILTER_METHODS, "REGISTER,INVITE,SUBSCRIBE,NOTIFY,OPTIONS,PUBLISH,MESSAGE");
+    setting_set_value(SETTING_FILTER_METHODS, "REGISTER,INVITE,SUBSCRIBE,NOTIFY,OPTIONS,PUBLISH,MESSAGE,INFO,REFER,UPDATE,KDMQ");
 
     // Add Call list column options
     set_option_value("cl.column0", "index");
@@ -72,13 +72,23 @@ init_options()
     set_option_value("cl.column6", "dst");
     set_option_value("cl.column7", "state");
 
+	// Done if config file should not be read
+	if(no_config) {
+		return 0;
+	}
+
     // Read options from configuration files
     read_options("/etc/sngreprc");
     read_options("/usr/local/etc/sngreprc");
-    // Get user homedir configuration
-    if (home) {
-        sprintf(userconf, "%s/.sngreprc", home);
-        read_options(userconf);
+    // Get user configuration
+    if ((rcfile = getenv("SNGREPRC"))) {
+        read_options(rcfile);
+    } else if ((rcfile = getenv("HOME"))) {
+        if ((userconf = sng_malloc(strlen(rcfile) + RCFILE_EXTRA_LEN))) {
+            sprintf(userconf, "%s/.sngreprc", rcfile);
+            read_options(userconf);
+            sng_free(userconf);
+        }
     }
 
     return 0;

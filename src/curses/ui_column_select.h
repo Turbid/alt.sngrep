@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -164,7 +164,7 @@ column_select_update_columns(ui_t *ui);
  * @brief Save selected columns to user config file
  *
  * Remove previously configurated columns from user's
- * $HOME/.sngreprc and add new ones
+ * $SNGREPRC or $HOME/.sngreprc and add new ones
  *
  * @param ui UI structure pointer
  */

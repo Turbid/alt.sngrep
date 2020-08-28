@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -39,10 +39,13 @@
 
 struct SSLConnection *connections;
 
-struct CipherSuite TLS_RSA_WITH_AES_128_CBC_SHA =
-{ 0x00, 0x2F };
-struct CipherSuite TLS_RSA_WITH_AES_256_CBC_SHA =
-{ 0x00, 0x35 };
+struct CipherData ciphers[] = {
+/*  { number, encoder,    ivlen, bits, digest, diglen, mode }, */
+    { 0x002F, ENC_AES,    16, 128, DIG_SHA1,   20, MODE_CBC },   /* TLS_RSA_WITH_AES_128_CBC_SHA     */
+    { 0x0035, ENC_AES256, 16, 256, DIG_SHA1,   20, MODE_CBC },   /* TLS_RSA_WITH_AES_256_CBC_SHA     */
+    { 0x009d, ENC_AES256, 4,  256, DIG_SHA384, 48, MODE_GCM },   /* TLS_RSA_WITH_AES_256_GCM_SHA384  */
+    { 0,      0,          0,  0,   0,          0,  0        }
+};
 
 #define TLS_DEBUG 0
 
@@ -82,7 +85,6 @@ P_hash(const char *digest, unsigned char *dest, int dlen, unsigned char *secret,
 {
     unsigned char hmac[48];
     uint32_t hlen;
-    HMAC_CTX hm;
     const EVP_MD *md = EVP_get_digestbyname(digest);
     uint32_t tmpslen;
     unsigned char tmpseed[slen];
@@ -95,6 +97,8 @@ P_hash(const char *digest, unsigned char *dest, int dlen, unsigned char *secret,
 
     // Calculate enough data to fill destination
     while (pending > 0) {
+#if MODSSL_USE_OPENSSL_PRE_1_1_API
+        HMAC_CTX hm;
         HMAC_Init(&hm, secret, sslen, md);
         HMAC_Update(&hm, tmpseed, tmpslen);
         HMAC_Final(&hm, tmpseed, &tmpslen);
@@ -104,65 +108,84 @@ P_hash(const char *digest, unsigned char *dest, int dlen, unsigned char *secret,
         HMAC_Update(&hm, seed, slen);
         HMAC_Final(&hm, hmac, &hlen);
 
+        HMAC_cleanup(&hm);
+#else
+        HMAC_CTX *hm = HMAC_CTX_new();
+        HMAC_Init_ex(hm, secret, sslen, md, NULL);
+        HMAC_Update(hm, tmpseed, tmpslen);
+        HMAC_Final(hm, tmpseed, &tmpslen);
+
+        HMAC_Init_ex(hm, secret, sslen, md, NULL);
+        HMAC_Update(hm, tmpseed, tmpslen);
+        HMAC_Update(hm, seed, slen);
+        HMAC_Final(hm, hmac, &hlen);
+
+        HMAC_CTX_free(hm);
+#endif
         hlen = (hlen > pending) ? pending : hlen;
         memcpy(out, hmac, hlen);
         out += hlen;
         pending -= hlen;
     }
-    HMAC_cleanup(&hm);
 
     return hlen;
 }
 
 int
-PRF(unsigned char *dest, int dlen, unsigned char *pre_master_secret,
-    int plen, unsigned char *label, unsigned char *seed, int slen)
-{
+PRF(struct SSLConnection *conn,
+    unsigned char *dest, int dlen, unsigned char *pre_master_secret,
+    int plen, unsigned char *label, unsigned char *seed, int slen) {
     int i;
 
-    // Split the secret by half to generate MD5 and SHA secret parts
-    int hplen = plen / 2 + plen % 2;
-    unsigned char md5_secret[hplen];
-    unsigned char sha_secret[hplen];
-    memcpy(md5_secret, pre_master_secret, hplen);
-    memcpy(sha_secret, pre_master_secret + plen / 2, plen / 2);
+    if (conn->version < 3) {
+        // Split the secret by half to generate MD5 and SHA secret parts
+        int hplen = plen / 2 + plen % 2;
+        unsigned char md5_secret[hplen];
+        unsigned char sha_secret[hplen];
+        memcpy(md5_secret, pre_master_secret, hplen);
+        memcpy(sha_secret, pre_master_secret + plen / 2, plen / 2);
 
-    // This vars will store the values of P_MD5 and P_SHA-1
-    unsigned char h_md5[dlen];
-    unsigned char h_sha[dlen];
+        // This vars will store the values of P_MD5 and P_SHA-1
+        unsigned char h_md5[dlen];
+        unsigned char h_sha[dlen];
 
-    // Concatenate given seed to the label to get the final seed
-    int llen = strlen((const char*) label);
-    unsigned char fseed[slen + llen];
-    memcpy(fseed, label, llen);
-    memcpy(fseed + llen, seed, slen);
-    tls_debug_print_hex("hash seed",fseed, slen + llen);
+        // Concatenate given seed to the label to get the final seed
+        int llen = strlen((const char*) label);
+        unsigned char fseed[slen + llen];
+        memcpy(fseed, label, llen);
+        memcpy(fseed + llen, seed, slen);
 
-    // Get enough MD5 and SHA1 data to fill output len
-    P_hash("MD5", h_md5, dlen, pre_master_secret, hplen, fseed, slen + llen);
-    P_hash("SHA1", h_sha, dlen, pre_master_secret + hplen, hplen, fseed, slen + llen);
+        // Get enough MD5 and SHA1 data to fill output len
+        P_hash("MD5", h_md5, dlen, pre_master_secret, hplen, fseed, slen + llen);
+        P_hash("SHA1", h_sha, dlen, pre_master_secret + hplen, hplen, fseed, slen + llen);
 
-    // Final output will be MD5 and SHA1 X-ORed
-    for (i = 0; i < dlen; i++)
-        dest[i] = h_md5[i] ^ h_sha[i];
+        // Final output will be MD5 and SHA1 X-ORed
+        for (i = 0; i < dlen; i++)
+            dest[i] = h_md5[i] ^ h_sha[i];
 
-    tls_debug_print_hex("PRF out", dest, dlen);
-    return dlen;
-}
+    } else {
+        // Concatenate given seed to the label to get the final seed
+        int llen = strlen((const char*) label);
+        unsigned char fseed[slen + llen];
+        memcpy(fseed, label, llen);
+        memcpy(fseed + llen, seed, slen);
 
-int
-PRF12(unsigned char *dest, int dlen, unsigned char *pre_master_secret,
-        int plen, unsigned char *label, unsigned char *seed, int slen) {
+        // Get enough SHA data to fill output len
+        switch (conn->cipher_data.digest) {
+            case DIG_SHA1:
+                P_hash("SHA256", dest, dlen, pre_master_secret, plen, fseed, slen + llen);
+                break;
+            case DIG_SHA256:
+                P_hash("SHA256", dest, dlen, pre_master_secret, plen, fseed, slen + llen);
+                break;
+            case DIG_SHA384:
+                P_hash("SHA384", dest, dlen, pre_master_secret, plen, fseed, slen + llen);
+                break;
+            default:
+                break;
+        }
+    }
 
-    // Concatenate given seed to the label to get the final seed
-    int llen = strlen((const char*) label);
-    unsigned char fseed[slen + llen];
-    memcpy(fseed, label, llen);
-    memcpy(fseed + llen, seed, slen);
-    tls_debug_print_hex("hash seed",fseed, slen + llen);
-
-    // Get enough SHA256 data to fill output len
-    P_hash("SHA256", dest, dlen, pre_master_secret, plen, fseed, slen + llen);
     tls_debug_print_hex("PRF out", dest, dlen);
     return dlen;
 }
@@ -177,11 +200,15 @@ tls_connection_create(struct in_addr caddr, uint16_t cport, struct in_addr saddr
     memcpy(&conn->client_port, &cport, sizeof(uint16_t));
     memcpy(&conn->server_port, &sport, sizeof(uint16_t));
 
+#if MODSSL_USE_OPENSSL_PRE_1_1_API
     SSL_library_init();
     ERR_load_crypto_strings();
     OpenSSL_add_all_algorithms();
 
     if (!(conn->ssl_ctx = SSL_CTX_new(SSLv23_server_method())))
+#else
+    if (!(conn->ssl_ctx = SSL_CTX_new(TLS_server_method())))
+#endif
         return NULL;
 
     SSL_CTX_use_PrivateKey_file(conn->ssl_ctx, capture_keyfile(),
@@ -190,6 +217,8 @@ tls_connection_create(struct in_addr caddr, uint16_t cport, struct in_addr saddr
         return NULL;
 
     conn->server_private_key = SSL_get_privatekey(conn->ssl);
+    conn->client_cipher_ctx = EVP_CIPHER_CTX_new();
+    conn->server_cipher_ctx = EVP_CIPHER_CTX_new();
 
     // Add this connection to the list
     conn->next = connections;
@@ -216,6 +245,8 @@ tls_connection_destroy(struct SSLConnection *conn)
     }
 
     // Deallocate connection memory
+    EVP_CIPHER_CTX_free(conn->client_cipher_ctx);
+    EVP_CIPHER_CTX_free(conn->server_cipher_ctx);
     SSL_CTX_free(conn->ssl_ctx);
     SSL_free(conn->ssl);
     sng_free(conn);
@@ -234,15 +265,21 @@ tls_check_keyfile(const char *keyfile)
     SSL_CTX *ssl_ctx;
     char errbuf[1024];
 
+#if MODSSL_USE_OPENSSL_PRE_1_1_API
     SSL_library_init();
     SSL_load_error_strings();
     ERR_load_crypto_strings();
     OpenSSL_add_all_algorithms();
+#endif
 
     if (access(capture_keyfile(), R_OK) != 0)
         return 0;
 
+#if MODSSL_USE_OPENSSL_PRE_1_1_API
     if (!(ssl_ctx = SSL_CTX_new(SSLv23_server_method())))
+#else
+    if (!(ssl_ctx = SSL_CTX_new(TLS_server_method())))
+#endif
         return 0;
 
     if (!(SSL_CTX_use_PrivateKey_file(ssl_ctx, capture_keyfile(), SSL_FILETYPE_PEM))) {
@@ -299,6 +336,7 @@ tls_process_segment(packet_t *packet, struct tcphdr *tcp)
     struct in_addr ip_src, ip_dst;
     uint16_t sport = packet->src.port;
     uint16_t dport = packet->dst.port;
+    address_t tlsserver = capture_tls_server();
 
     // Convert addresses
     inet_pton(AF_INET, packet->src.ip, &ip_src);
@@ -349,8 +387,16 @@ tls_process_segment(packet_t *packet, struct tcphdr *tcp)
         }
     } else {
         if (tcp->th_flags & TH_SYN & ~TH_ACK) {
-            // New connection, store it status and leave
-            tls_connection_create(ip_src, sport, ip_dst, dport);
+            // Only create new connections whose destination is tlsserver
+            if (tlsserver.port) {
+                if (addressport_equals(tlsserver, packet->dst)) {
+                    // New connection, store it status and leave
+                    tls_connection_create(ip_src, sport, ip_dst, dport);
+                }
+            } else {
+                // New connection, store it status and leave
+                tls_connection_create(ip_src, sport, ip_dst, dport);
+            }
         }
     }
 
@@ -377,33 +423,32 @@ tls_process_record_ssl2(struct SSLConnection *conn, const uint8_t *payload,
                    const int len, uint8_t **out, uint32_t *outl)
 {
     int record_len_len;
-    uint16 record_len16;
-    uint24 record_len24;
+    uint32_t record_len;
     uint8_t record_type;
     const opaque *fragment;
     int flen;
 
     // No record data here!
     if (len == 0)
-        return 0;
+        return 1;
 
     // Record header length
     record_len_len = (payload[0] & 0x80) ? 2 : 3;
 
     // Two bytes SSLv2 record length field
     if (record_len_len == 2) {
-        record_len16.x[0] = (payload[0] & 0x7f) << 8;
-        record_len16.x[1] = (payload[1]);
+        record_len = (payload[0] & 0x7f) << 8;
+        record_len += (payload[1]);
         record_type = payload[2];
         fragment = payload + 3;
-        flen = UINT16_INT(record_len16) - 1 /* record type */;
+        flen = record_len - 1 /* record type */;
     } else {
-        record_len24.x[0] = (payload[0] & 0x3f) << 8;
-        record_len24.x[1] = payload[1];
-        record_len24.x[2] = payload[2];
+        record_len = (payload[0] & 0x3f) << 8;
+        record_len += payload[1];
+        record_len += payload[2];
         record_type = payload[3];
         fragment = payload + 4;
-        flen = UINT24_INT(record_len24) - 1 /* record type */;
+        flen = record_len - 1 /* record type */;
     }
 
     // We only handle Client Hello handshake SSLv2 records
@@ -450,7 +495,7 @@ tls_process_record(struct SSLConnection *conn, const uint8_t *payload,
 
     // No record data here!
     if (len == 0)
-        return 0;
+        return 1;
 
     // Get Record data
     record = (struct TLSPlaintext *) payload;
@@ -469,8 +514,14 @@ tls_process_record(struct SSLConnection *conn, const uint8_t *payload,
                 break;
             case change_cipher_spec:
                 // From now on, this connection will be encrypted using MasterSecret
-                if (conn->client_cipher_ctx.cipher && conn->server_cipher_ctx.cipher)
+#if MODSSL_USE_OPENSSL_PRE_1_1_API
+                if (conn->client_cipher_ctx->cipher && conn->server_cipher_ctx->cipher)
                     conn->encrypted = 1;
+#else
+                if (EVP_CIPHER_CTX_get_cipher_data(conn->client_cipher_ctx) &&
+                    EVP_CIPHER_CTX_get_cipher_data(conn->server_cipher_ctx))
+                    conn->encrypted = 1;
+#endif
                 break;
             case application_data:
                 if (conn->encrypted) {
@@ -479,7 +530,7 @@ tls_process_record(struct SSLConnection *conn, const uint8_t *payload,
                 }
                 break;
             default:
-                break;
+                return 1;
         }
     }
 
@@ -556,10 +607,17 @@ tls_process_record_handshake(struct SSLConnection *conn, const opaque *fragment,
                 // Decrypt PreMasterKey
                 clientkeyex = (struct ClientKeyExchange *) body;
 
+#if MODSSL_USE_OPENSSL_PRE_1_1_API
                 RSA_private_decrypt(UINT16_INT(clientkeyex->length),
                                     (const unsigned char *) &clientkeyex->exchange_keys,
                                     (unsigned char *) &conn->pre_master_secret,
                                     conn->server_private_key->pkey.rsa, RSA_PKCS1_PADDING);
+#else
+                RSA_private_decrypt(UINT16_INT(clientkeyex->length),
+                                    (const unsigned char *) &clientkeyex->exchange_keys,
+                                    (unsigned char *) &conn->pre_master_secret,
+                                    EVP_PKEY_get0_RSA(conn->server_private_key), RSA_PKCS1_PADDING);
+#endif
 
                 tls_debug_print_hex("client_random", &conn->client_random, 32);
                 tls_debug_print_hex("server_random", &conn->server_random, 32);
@@ -568,50 +626,87 @@ tls_process_record_handshake(struct SSLConnection *conn, const opaque *fragment,
                 memcpy(seed, &conn->client_random, sizeof(struct Random));
                 memcpy(seed + sizeof(struct Random), &conn->server_random, sizeof(struct Random));
 
-                if (conn->version < 3) {
-                    // Get MasterSecret
-                    PRF((unsigned char *) &conn->master_secret, sizeof(struct MasterSecret),
-                        (unsigned char *) &conn->pre_master_secret, sizeof(struct PreMasterSecret),
-                        (unsigned char *) "master secret", seed, sizeof(struct Random) * 2);
-                } else {
-                    PRF12((unsigned char *) &conn->master_secret, sizeof(struct MasterSecret),
-                          (unsigned char *) &conn->pre_master_secret, sizeof(struct PreMasterSecret),
-                          (unsigned char *) "master secret", seed, sizeof(struct Random) * 2);
-                }
+                // Get MasterSecret
+                PRF(conn,
+                    (unsigned char *) &conn->master_secret, sizeof(struct MasterSecret),
+                    (unsigned char *) &conn->pre_master_secret, sizeof(struct PreMasterSecret),
+                    (unsigned char *) "master secret", seed, sizeof(struct Random) * 2);
+
                 tls_debug_print_hex("master_secret", conn->master_secret.random, 48);
 
                 memcpy(seed, &conn->server_random, sizeof(struct Random) * 2);
                 memcpy(seed + sizeof(struct Random), &conn->client_random, sizeof(struct Random));
 
+                int key_material_len = 0;
+                key_material_len += conn->cipher_data.diglen * 2;
+                key_material_len += conn->cipher_data.ivblock * 2;
+                key_material_len += conn->cipher_data.bits / 4;
+                uint8_t *key_material = sng_malloc(key_material_len);
+
                 // Generate MACs, Write Keys and IVs
-                if (conn->version < 3) {
-                    PRF((unsigned char *) &conn->key_material, sizeof(struct tls_data),
-                        (unsigned char *) &conn->master_secret, sizeof(struct MasterSecret),
-                        (unsigned char *) "key expansion", seed, sizeof(struct Random) * 2);
+                PRF(conn,
+                    (unsigned char *) key_material, key_material_len,
+                    (unsigned char *) &conn->master_secret, sizeof(struct MasterSecret),
+                    (unsigned char *) "key expansion", seed, sizeof(struct Random) * 2);
+
+                // Get write mac keys
+                if (conn->cipher_data.mode == MODE_GCM) {
+                    // AEAD ciphers
+                    conn->key_material.client_write_MAC_key = 0;
+                    conn->key_material.server_write_MAC_key = 0;
                 } else {
-                    PRF12((unsigned char *) &conn->key_material, sizeof(struct tls_data),
-                          (unsigned char *) &conn->master_secret, sizeof(struct MasterSecret),
-                          (unsigned char *) "key expansion", seed, sizeof(struct Random) * 2);
+                    // Copy prf output to ssl connection key material
+                    int mk_len = conn->cipher_data.diglen;
+                    conn->key_material.client_write_MAC_key = sng_malloc(mk_len);
+                    tls_debug_print_hex("client_write_MAC_key", key_material, mk_len);
+                    memcpy(conn->key_material.client_write_MAC_key, key_material, mk_len);
+                    key_material += mk_len;
+                    conn->key_material.server_write_MAC_key = sng_malloc(mk_len);
+                    tls_debug_print_hex("server_write_MAC_key", key_material, mk_len);
+                    memcpy(conn->key_material.server_write_MAC_key, key_material, mk_len);
+                    key_material += mk_len;
                 }
 
-                tls_debug_print_hex("client_write_MAC_key", conn->key_material.client_write_MAC_key, 20);
-                tls_debug_print_hex("server_write_MAC_key", conn->key_material.server_write_MAC_key, 20);
-                tls_debug_print_hex("client_write_key",     conn->key_material.client_write_key, 32);
-                tls_debug_print_hex("server_write_key",     conn->key_material.server_write_key, 32);
-                tls_debug_print_hex("client_write_IV",      conn->key_material.client_write_IV, 16);
-                tls_debug_print_hex("server_write_IV",      conn->key_material.server_write_IV, 16);
+                // Get write keys
+                int wk_len = conn->cipher_data.bits / 8;
+                conn->key_material.client_write_key = sng_malloc(wk_len);
+                memcpy(conn->key_material.client_write_key, key_material, wk_len);
+                tls_debug_print_hex("client_write_key", key_material, wk_len);
+                key_material+=wk_len;
+
+                conn->key_material.server_write_key = sng_malloc(wk_len);
+                memcpy(conn->key_material.server_write_key, key_material, wk_len);
+                tls_debug_print_hex("server_write_key", key_material, wk_len);
+                key_material+=wk_len;
+
+                // Get IV blocks
+                conn->key_material.client_write_IV = sng_malloc(conn->cipher_data.ivblock);
+                memcpy(conn->key_material.client_write_IV, key_material, conn->cipher_data.ivblock);
+                tls_debug_print_hex("client_write_IV", key_material,  conn->cipher_data.ivblock);
+                key_material+=conn->cipher_data.ivblock;
+                conn->key_material.server_write_IV = sng_malloc(conn->cipher_data.ivblock);
+                memcpy(conn->key_material.server_write_IV, key_material, conn->cipher_data.ivblock);
+                tls_debug_print_hex("server_write_IV", key_material,  conn->cipher_data.ivblock);
 
                 // Done with the seed
                 sng_free(seed);
 
                 // Create Client decoder
-                EVP_CIPHER_CTX_init(&conn->client_cipher_ctx);
-                EVP_CipherInit(&conn->client_cipher_ctx, conn->ciph,
+#if MODSSL_USE_OPENSSL_PRE_1_1_API
+                EVP_CIPHER_CTX_init(conn->client_cipher_ctx);
+#else
+                EVP_CIPHER_CTX_reset(conn->client_cipher_ctx);
+#endif
+                EVP_CipherInit(conn->client_cipher_ctx, conn->ciph,
                                conn->key_material.client_write_key, conn->key_material.client_write_IV,
                                0);
 
-                EVP_CIPHER_CTX_init(&conn->server_cipher_ctx);
-                EVP_CipherInit(&conn->server_cipher_ctx, conn->ciph,
+#if MODSSL_USE_OPENSSL_PRE_1_1_API
+                EVP_CIPHER_CTX_init(conn->server_cipher_ctx);
+#else
+                EVP_CIPHER_CTX_reset(conn->server_cipher_ctx);
+#endif
+                EVP_CipherInit(conn->server_cipher_ctx, conn->ciph,
                                conn->key_material.server_write_key, conn->key_material.server_write_IV,
                                0);
 
@@ -647,9 +742,9 @@ tls_process_record_data(struct SSLConnection *conn, const opaque *fragment,
     tls_debug_print_hex("Ciphertext", fragment, len);
 
     if (conn->direction == 0) {
-        evp = &conn->client_cipher_ctx;
+        evp = conn->client_cipher_ctx;
     } else {
-        evp = &conn->server_cipher_ctx;
+        evp = conn->server_cipher_ctx;
     }
 
     // TLS 1.1 and later extract explicit IV
@@ -690,15 +785,27 @@ tls_process_record_data(struct SSLConnection *conn, const opaque *fragment,
 int
 tls_connection_load_cipher(struct SSLConnection *conn)
 {
-    if (conn->cipher_suite.cs1 != 0x00)
-        return 1;
+    int i;
+    int ciphnum = (conn->cipher_suite.cs1 << 8) | conn->cipher_suite.cs2;
 
-    if (conn->cipher_suite.cs2 == TLS_RSA_WITH_AES_256_CBC_SHA.cs2) {
-        conn->ciph = EVP_get_cipherbyname("AES256");
-    } else if (conn->cipher_suite.cs2 == TLS_RSA_WITH_AES_128_CBC_SHA.cs2) {
-        conn->ciph = EVP_get_cipherbyname("AES128");
-    } else {
-        return 1;
+    // Check if this is one of the supported ciphers
+    for (i=0; ciphers[i].enc; i++) {
+        if (ciphnum == ciphers[i].num) {
+            conn->cipher_data = ciphers[i];
+            break;
+        }
+    }
+
+    // Set proper cipher encoder
+    switch (conn->cipher_data.enc) {
+        case ENC_AES:
+            conn->ciph = EVP_get_cipherbyname("AES128");
+            break;
+        case ENC_AES256:
+            conn->ciph = EVP_get_cipherbyname("AES256");
+            break;
+        default:
+            return 1;
     }
 
     return 0;

@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -89,5 +89,15 @@ address_equals(address_t addr1, address_t addr2);
  */
 bool
 address_is_local(address_t addr);
+
+/**
+ * @brief Convert string IP:PORT to address structure
+ *
+ * @param string in format IP:PORT
+ * @return address structure
+ */
+address_t
+address_from_str(const char *ipport);
+
 
 #endif /* __SNGREP_ADDRESS_H */

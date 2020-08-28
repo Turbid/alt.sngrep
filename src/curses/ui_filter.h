@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -53,9 +53,12 @@ enum filter_field_list {
     FLD_FILTER_INVITE,
     FLD_FILTER_SUBSCRIBE,
     FLD_FILTER_NOTIFY,
+    FLD_FILTER_INFO,
     FLD_FILTER_OPTIONS,
     FLD_FILTER_PUBLISH,
     FLD_FILTER_MESSAGE,
+    FLD_FILTER_REFER,
+    FLD_FILTER_UPDATE,
     FLD_FILTER_FILTER,
     FLD_FILTER_CANCEL,
     //! Never remove this field id @see filter_info

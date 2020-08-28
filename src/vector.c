@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -172,12 +172,27 @@ vector_append(vector_t *vector, void *item)
 }
 
 int
+vector_append_vector(vector_t *dst, vector_t *src)
+{
+    if (!dst || !src)
+        return 1;
+
+    vector_iter_t it = vector_iterator(src);
+
+    void *item;
+    while ((item = vector_iterator_next(&it)))
+        vector_append(dst, item);
+
+    return 0;
+}
+
+int
 vector_insert(vector_t *vector, void *item, int pos)
 {
     if (!item)
         return vector->count;
 
-    if (pos < 0 || pos > vector->count)
+    if (pos < 0 || pos > vector->count - 2)
         return vector->count;
 
     // If position is already filled with that item, we're done

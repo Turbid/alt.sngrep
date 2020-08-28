@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -119,6 +119,8 @@ enum settings_field_list {
     FLD_SETTINGS_EEP_LISTEN_PORT_LB,
     FLD_SETTINGS_EEP_LISTEN_PASS,
     FLD_SETTINGS_EEP_LISTEN_PASS_LB,
+	FLD_SETTINGS_EEP_LISTEN_UUID,
+	FLD_SETTINGS_EEP_LISTEN_UUID_LB,
 #endif
     FLD_SETTINGS_COUNT,
 };

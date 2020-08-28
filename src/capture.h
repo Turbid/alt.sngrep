@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -38,6 +38,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include "address.h"
 
 #ifndef __FAVOR_BSD
 #define __FAVOR_BSD
@@ -68,6 +69,10 @@
 #include <netinet/ip6.h>
 #endif
 
+#ifdef SLL_HDR_LEN
+#include <pcap/sll.h>
+#endif
+
 #include <arpa/inet.h>
 #include <netinet/if_ether.h>
 #include <netinet/ip.h>
@@ -87,6 +92,15 @@
 #define ETHERTYPE_8021Q 0x8100
 #endif
 
+//! NFLOG Support (for libpcap <1.6.0)
+#define DLT_NFLOG       239
+#define NFULA_PAYLOAD   9
+
+typedef struct nflog_tlv {
+    u_int16_t   tlv_length;
+    u_int16_t   tlv_type;
+} nflog_tlv_t;
+
 //! Define Websocket Transport codes
 #define WH_FIN      0x80
 #define WH_RSV      0x70
@@ -94,14 +108,6 @@
 #define WH_MASK     0x80
 #define WH_LEN      0x7F
 #define WS_OPCODE_TEXT 0x1
-
-//! Capture modes
-enum capture_status {
-    CAPTURE_ONLINE = 0,
-    CAPTURE_ONLINE_PAUSED,
-    CAPTURE_OFFLINE,
-    CAPTURE_OFFLINE_LOADING,
-};
 
 enum capture_storage {
     CAPTURE_STORAGE_NONE = 0,
@@ -120,18 +126,22 @@ typedef struct capture_info capture_info_t;
  * Store capture configuration and global data
  */
 struct capture_config {
-    //! Capture status
-    enum capture_status status;
     //! Calls capture limit. 0 for disabling
     size_t limit;
+    //! Set size of pcap buffer
+    size_t pcap_buffer_size;
     //! Also capture RTP packets
     bool rtp_capture;
     //! Rotate capturad dialogs when limit have reached
     bool rotate;
+    //! Capture sources are paused (all packets are skipped)
+    int paused;
     //! Where should we store captured packets
     enum capture_storage storage;
     //! Key file for TLS decrypt
     const char *keyfile;
+    //! TLS Server address
+    address_t tlsserver;
     //! capture filter expression text
     const char *filter;
     //! The compiled filter expression
@@ -140,10 +150,6 @@ struct capture_config {
     pcap_dumper_t *pd;
     //! Capture sources
     vector_t *sources;
-    //! Packets pending IP reassembly
-    vector_t *ip_reasm;
-    //! Packets pending TCP reassembly
-    vector_t *tcp_reasm;
     //! Capture Lock. Avoid parsing and handling data at the same time
     pthread_mutex_t lock;
 };
@@ -155,6 +161,8 @@ struct capture_config {
  */
 struct capture_info
 {
+    //! Flag to determine if capture is running
+    bool running;
     //! libpcap link type
     int link;
     //! libpcap link header size
@@ -169,6 +177,10 @@ struct capture_info
     const char *infile;
     //! Capture device in Online mode
     const char *device;
+    //! Packets pending IP reassembly
+    vector_t *ip_reasm;
+    //! Packets pending TCP reassembly
+    vector_t *tcp_reasm;
     //! Capture thread for online capturing
     pthread_t capture_t;
 };
@@ -179,9 +191,10 @@ struct capture_info
  * @param limit Numbers of calls >0
  * @param rtp_catpure Enable rtp capture
  * @param rotate Enable capture rotation
+ * @param set size of pcap buffer
  */
 void
-capture_init(size_t limit, bool rtp_capture, bool rotate);
+capture_init(size_t limit, bool rtp_capture, bool rotate, size_t pcap_buffer_size);
 
 /**
  * @brief Deinitialize capture data
@@ -270,7 +283,7 @@ capture_packet_reasm_ip(capture_info_t *capinfo, const struct pcap_pkthdr *heade
  * @return NULL when packet has not been completely assembled
  */
 packet_t *
-capture_packet_reasm_tcp(packet_t *packet, struct tcphdr *tcp,
+capture_packet_reasm_tcp(capture_info_t *capinfo, packet_t *packet, struct tcphdr *tcp,
                          u_char *payload, int size_payload);
 
 /**
@@ -322,6 +335,14 @@ int
 capture_is_online();
 
 /**
+ * @brief Check if at least one capture handle is opened
+ *
+ * @return 1 if any capture source is running, 0 if all ended
+ */
+int
+capture_is_running();
+
+/**
  * @brief Set a bpf filter in open capture
  *
  * @param filter String containing the BPF filter text
@@ -357,7 +378,7 @@ capture_paused();
 /**
  * @brief Get capture status value
  */
-enum capture_status
+int
 capture_status();
 
 /**
@@ -399,6 +420,20 @@ capture_keyfile();
  */
 void
 capture_set_keyfile(const char *keyfile);
+
+/**
+ * @brief Get TLS Server address if configured
+ * @return address scructure
+ */
+address_t
+capture_tls_server();
+
+/**
+ * @brief Return packet catprue sources count
+ * @return capture sources count
+ */
+int
+capture_sources_count();
 
 /**
  * @brief Return the last capture error

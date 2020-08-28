@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -218,13 +218,13 @@ call_update_state(sip_call_t *call, sip_msg_t *msg)
             } else if (reqresp == SIP_METHOD_CANCEL) {
                 // Alice is not in the mood
                 call->state = SIP_CALLSTATE_CANCELLED;
-            } else if ((reqresp == 480) || (reqresp == 486)) {
+            } else if ((reqresp == 480) || (reqresp == 486) || (reqresp == 600 )) {
                 // Bob is busy
                 call->state = SIP_CALLSTATE_BUSY;
             } else if (reqresp > 400 && call->invitecseq == msg->cseq) {
                 // Bob is not in the mood
                 call->state = SIP_CALLSTATE_REJECTED;
-            } else if (reqresp > 300) {
+            } else if (reqresp == 181 || reqresp == 302 || reqresp == 301) {
                 // Bob has diversion
                 call->state = SIP_CALLSTATE_DIVERTED;
             }

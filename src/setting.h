@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -32,6 +32,7 @@
  *  - Initialization
  *  - \@sysdir\@/sngreprc
  *  - $HOME/.sngreprc
+ *  - $SNGREPRC
  *
  * This is a basic approach to configuration, but at least a minimun is required
  * for those who can not see all the list columns or want to disable colours in
@@ -43,6 +44,9 @@
 
 //! Max setting value
 #define MAX_SETTING_LEN   1024
+
+//! Max extra length needed for "/.sngreprc.old"
+#define RCFILE_EXTRA_LEN   16
 
 //! Shorter declarartion of setting_option struct
 typedef struct setting_option setting_t;
@@ -78,14 +82,20 @@ enum setting_id {
     SETTING_CAPTURE_LIMIT,
     SETTING_CAPTURE_DEVICE,
     SETTING_CAPTURE_OUTFILE,
+    SETTING_CAPTURE_BUFFER,
+#if defined(WITH_GNUTLS) || defined(WITH_OPENSSL)
     SETTING_CAPTURE_KEYFILE,
+    SETTING_CAPTURE_TLSSERVER,
+#endif
     SETTING_CAPTURE_RTP,
     SETTING_CAPTURE_STORAGE,
     SETTING_CAPTURE_ROTATE,
     SETTING_SIP_NOINCOMPLETE,
+    SETTING_SIP_HEADER_X_CID,
     SETTING_SIP_CALLS,
     SETTING_SAVEPATH,
     SETTING_DISPLAY_ALIAS,
+    SETTING_ALIAS_PORT,
     SETTING_CL_SCROLLSTEP,
     SETTING_CL_COLORATTR,
     SETTING_CL_AUTOSCROLL,
@@ -103,6 +113,7 @@ enum setting_id {
     SETTING_CF_ONLYMEDIA,
     SETTING_CF_DELTA,
     SETTING_CR_SCROLLSTEP,
+    SETTING_CR_NON_ASCII,
     SETTING_FILTER_PAYLOAD,
     SETTING_FILTER_METHODS,
 #ifdef USE_EEP
@@ -117,6 +128,7 @@ enum setting_id {
     SETTING_EEP_LISTEN_ADDR,
     SETTING_EEP_LISTEN_PORT,
     SETTING_EEP_LISTEN_PASS,
+    SETTING_EEP_LISTEN_UUID,
 #endif
     SETTING_COUNT
 };

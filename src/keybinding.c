@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -55,6 +55,7 @@ key_binding_t bindings[ACTION_SENTINEL] = {
    { ACTION_RESIZE_SCREEN,  "",             { KEY_RESIZE }, 1 },
    { ACTION_CLEAR,          "clear",        { KEY_CTRL('U'), KEY_CTRL('W')}, 2 },
    { ACTION_CLEAR_CALLS,    "clearcalls",   { KEY_F(5), KEY_CTRL('L')}, 2 },
+   { ACTION_CLEAR_CALLS_SOFT, "clearcallssoft", {KEY_F(9)}, 2 },
    { ACTION_TOGGLE_SYNTAX,  "togglesyntax", { KEY_F(8), 'C' }, 2 },
    { ACTION_CYCLE_COLOR,    "colormode",    { 'c' }, 1 },
    { ACTION_COMPRESS,       "compress",     { 's' }, 1 },

@@ -1,8 +1,9 @@
 AC_PREREQ([2.59])
-AC_INIT([sngrep], [1.4.2], [kaian@irontec.com], [sngrep], [http://www.irontec.com/])
+AC_INIT([sngrep], [1.4.7], [kaian@irontec.com], [sngrep], [http://www.irontec.com/])
 AM_INIT_AUTOMAKE([1.9])
-m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
 AC_CONFIG_HEADERS([src/config.h])
+m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
+m4_ifdef([AC_CONFIG_MACRO_DIRS], AC_CONFIG_MACRO_DIRS([m4]), m4_include([m4/sngrep.m4]))
 
 AC_COPYRIGHT("Irontec S.L.")
 
@@ -26,6 +27,7 @@ AC_PROG_INSTALL
 AC_PROG_LN_S
 AC_PROG_EGREP
 AC_LANG(C)
+AM_PROG_CC_C_O
 
 #######################################################################
 # Check for other REQUIRED libraries
@@ -53,13 +55,13 @@ AS_IF([test "x$enable_unicode" == "xyes"], [
 	# Ncurses with wide-character support
 	AC_DEFINE([WITH_UNICODE], [], [Compile With Unicode compatibility])
 
-	AC_CHECK_HEADER([ncursesw/ncurses.h], [], [
-	    AC_MSG_ERROR([ You need to have ncurses development files installed to compile sngrep.])
-	])
-
-	AC_CHECK_LIB([ncursesw], [initscr], [], [
-	    AC_MSG_ERROR([ You need to have libncursesw installed to compile sngrep.])
-	])
+   SNGREP_CHECK_SCRIPT([ncursesw6], [addnwstr], [WITH_UNICODE], "ncursesw6-config",
+    SNGREP_CHECK_SCRIPT([ncursesw], [addnwstr], [WITH_UNICODE], "ncursesw5-config",
+     SNGREP_CHECK_SCRIPT([ncurses], [addnwstr], [WITH_UNICODE], "ncurses5-config",
+      SNGREP_CHECK_LIB([ncursesw6], [addnwstr], [WITH_UNICODE],
+       SNGREP_CHECK_LIB([ncursesw], [addnwstr], [WITH_UNICODE],
+        SNGREP_CHECK_LIB([ncurses], [addnwstr], [WITH_UNICODE],
+	))))))
 
 	AC_CHECK_LIB([panelw], [new_panel], [], [
 	    AC_MSG_ERROR([ You need to have ncurses panelw library installed to compile sngrep.])
@@ -106,14 +108,31 @@ AC_ARG_WITH([gnutls],
 )
 
 AS_IF([test "x$WITH_GNUTLS" == "xyes"], [
+
+    m4_ifdef([PKG_CHECK_MODULES], [
+        PKG_CHECK_MODULES([LIBGNUTLS], [gnutls])
+    ], [
 	AC_CHECK_LIB([gnutls], [gnutls_init], [], [
 	    AC_MSG_ERROR([ You need to have gnutls installed to compile sngrep])
 	])
+    ])
 
-	AC_CHECK_LIB([gcrypt], [gcry_md_map_name], [], [
-	    AC_MSG_ERROR([ You need to have libgcrypt installed to compile sngrep])
-	])
+	AC_PATH_PROG([LIBGCRYPT_CONFIG],[libgcrypt-config],[no])
+	if test "x${LIBGCRYPT_CONFIG}" = "xno"; then
+	    AC_MSG_FAILURE([libgcrypt-config not found in PATH])
+	fi
+	AC_CHECK_LIB(
+		[gcrypt],
+		[gcry_md_map_name],
+		[LIBGCRYPT_CFLAGS="`${LIBGCRYPT_CONFIG} --cflags`"
+		LIBGCRYPT_LIBS="`${LIBGCRYPT_CONFIG} --libs`"
+		],
+		[AC_MSG_ERROR([ You need to have libgcrypt installed to compile sngrep])],
+		[`${LIBGCRYPT_CONFIG} --libs --cflags`]
+		)
 	AC_DEFINE([WITH_GNUTLS],[],[Compile With GnuTLS compatibility])
+	AC_SUBST(LIBGCRYPT_CFLAGS)
+	AC_SUBST(LIBGCRYPT_LIBS)
 ], [])
 
 ####
@@ -129,14 +148,16 @@ AS_IF([test "x$WITH_OPENSSL" == "xyes"], [
 	AS_IF([test "x$WITH_GNUTLS" == "xyes"], [
 	    AC_MSG_ERROR([ GnuTLS and OpenSSL can not be enabled at the same time ])
 	], [])
-
-	AC_CHECK_LIB([ssl], [SSL_new], [], [
-	    AC_MSG_ERROR([ You need to have libssl installed to compile sngrep])
-	])
-
-	AC_CHECK_LIB([crypto], [EVP_get_cipherbyname], [], [
-	    AC_MSG_ERROR([ You need to have libcrypto installed to compile sngrep])
-	])
+    m4_ifdef([PKG_CHECK_MODULES], [
+        PKG_CHECK_MODULES([SSL], [libssl libcrypto])
+    ], [
+        AC_CHECK_LIB([ssl], [SSL_new], [], [
+           AC_MSG_ERROR([ You need to have libssl installed to compile sngrep])
+        ])
+        AC_CHECK_LIB([crypto], [EVP_get_cipherbyname], [], [
+            AC_MSG_ERROR([ You need to have libcrypto installed to compile sngrep])
+        ])
+    ])
 	AC_DEFINE([WITH_OPENSSL],[],[Compile With Openssl compatibility])
 ], [])
 

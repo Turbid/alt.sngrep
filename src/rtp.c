@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -265,7 +265,8 @@ rtp_check_packet(packet_t *packet)
                     break;
 
                 // Header length
-                len = ntohs(hdr.len) * 4 + 4;
+                if ((len = ntohs(hdr.len) * 4 + 4) > size)
+                    break;
 
                 // Check RTCP packet header typ
                 switch (hdr.type) {

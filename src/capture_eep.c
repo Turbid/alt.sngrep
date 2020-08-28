@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  ** Copyright (C) 2012 Homer Project (http://www.sipcapture.org)
  **
  ** This program is free software: you can redistribute it and/or modify
@@ -172,6 +172,18 @@ capture_eep_deinit()
         eep_cfg.server_sock = -1;
         //pthread_join(&eep_cfg.server_thread, &ret);
     }
+}
+
+const char *
+capture_eep_send_port()
+{
+    return eep_cfg.capt_port;
+}
+
+const char *
+capture_eep_listen_port()
+{
+    return eep_cfg.capt_srv_port;
 }
 
 int
@@ -432,7 +444,7 @@ capture_eep_send_v3(packet_t *pkt)
     /* IPv6 */
     else if(pkt->ip_version == 6) {
         /* SRC IPv6 */
-        memcpy((void*) buffer+buflen, &src_ip4, sizeof(struct hep_chunk_ip6));
+        memcpy((void*) buffer+buflen, &src_ip6, sizeof(struct hep_chunk_ip6));
         buflen += sizeof(struct hep_chunk_ip6);
 
         memcpy((void*) buffer+buflen, &dst_ip6, sizeof(struct hep_chunk_ip6));
@@ -577,6 +589,16 @@ capture_eep_receive_v2()
 
 }
 
+
+/**
+ * @brief Received a HEP3 packet
+ *
+ * This function receives HEP protocol payload and converts it
+ * to a Packet information. This code has been updated based on
+ * Kamailio sipcapture module.
+ *
+ * @return packet pointer
+ */
 packet_t *
 capture_eep_receive_v3()
 {
@@ -588,11 +610,11 @@ capture_eep_receive_v3()
 #endif
     hep_chunk_t payload_chunk;
     hep_chunk_t authkey_chunk;
-    uint8_t family, proto;
+    hep_chunk_t uuid_chunk;
     char password[100];
     int password_len;
     unsigned char *payload = 0;
-    uint32_t len, pos;
+    uint32_t total_len, pos;
     char buffer[MAX_CAPTURE_LEN] ;
     //! Source and Destination Address
     address_t src, dst;
@@ -608,85 +630,125 @@ capture_eep_receive_v3()
     if (recvfrom(eep_cfg.server_sock, buffer, MAX_CAPTURE_LEN, 0, &eep_client, &eep_client_len) == -1)
         return NULL;
 
+    // Initialize structs
+    memset(&hg, 0, sizeof(hep_generic_t));
+    memset(&password, 0, sizeof(password));
+    memset(&src, 0, sizeof(address_t));
+    memset(&dst, 0, sizeof(address_t));
+    memset(&header, 0, sizeof(struct pcap_pkthdr));
+
     /* Copy initial bytes to EEP Generic header */
-    memcpy(&hg, buffer, sizeof(struct hep_generic));
+    memcpy(&hg.header, buffer, sizeof(struct hep_generic));
 
     /* header check */
     if (memcmp(hg.header.id, "\x48\x45\x50\x33", 4) != 0)
         return NULL;
 
-    /* IP proto */
-    family = hg.ip_family.data;
-    /* Proto ID */
-    proto = hg.ip_proto.data;
+    total_len = ntohs(hg.header.length);
+    pos = sizeof(hep_ctrl_t);
 
-    len = ntohs(hg.header.length) - sizeof(struct hep_generic);
-    pos = sizeof(struct hep_generic);
+    while (pos < total_len) {
 
-    /* IPv4 */
-    if (family == AF_INET) {
-        /* SRC IP */
-        memcpy(&src_ip4, (void*) buffer + pos, sizeof(struct hep_chunk_ip4));
-        inet_ntop(AF_INET, &src_ip4.data, src.ip, sizeof(src.ip));
-        pos += sizeof(struct hep_chunk_ip4);
+        hep_chunk_t *chunk = (struct hep_chunk*) (buffer + pos);
+        int chunk_vendor = ntohs(chunk->vendor_id);
+        int chunk_type = ntohs(chunk->type_id);
+        int chunk_len = ntohs(chunk->length);
 
-        /* DST IP */
-        memcpy(&dst_ip4, (void*) buffer + pos, sizeof(struct hep_chunk_ip4));
-        inet_ntop(AF_INET, &dst_ip4.data, dst.ip, sizeof(src.ip));
-        pos += sizeof(struct hep_chunk_ip4);
-    }
+        /* Bad length, drop packet */
+        if (chunk_len == 0) {
+            return NULL;
+        }
+
+        /* Skip not general chunks */
+        if (chunk_vendor != 0) {
+            pos += chunk_len;
+            continue;
+        }
+
+        switch (chunk_type) {
+            case CAPTURE_EEP_CHUNK_INVALID:
+                return NULL;
+            case CAPTURE_EEP_CHUNK_FAMILY:
+                memcpy(&hg.ip_family, (void*) buffer + pos, sizeof(hep_chunk_uint8_t));
+                break;
+            case CAPTURE_EEP_CHUNK_PROTO:
+                memcpy(&hg.ip_proto, (void*) buffer + pos, sizeof(hep_chunk_uint8_t));
+                break;
+            case CAPTURE_EEP_CHUNK_SRC_IP4:
+                memcpy(&src_ip4, (void*) buffer + pos, sizeof(struct hep_chunk_ip4));
+                inet_ntop(AF_INET, &src_ip4.data, src.ip, sizeof(src.ip));
+                break;
+            case CAPTURE_EEP_CHUNK_DST_IP4:
+                memcpy(&dst_ip4, (void*) buffer + pos, sizeof(struct hep_chunk_ip4));
+                inet_ntop(AF_INET, &dst_ip4.data, dst.ip, sizeof(src.ip));
+                break;
 #ifdef USE_IPV6
-    /* IPv6 */
-    else if(family == AF_INET6) {
-        /* SRC IPv6 */
-        memcpy(&src_ip6, (void*) buffer + pos, sizeof(struct hep_chunk_ip6));
-        inet_ntop(AF_INET6, &src_ip6.data, src.ip, sizeof(src.ip));
-        pos += sizeof(struct hep_chunk_ip6);
-
-        /* DST IP */
-        memcpy(&src_ip6, (void*) buffer + pos, sizeof(struct hep_chunk_ip6));
-        inet_ntop(AF_INET6, &dst_ip6.data, dst.ip, sizeof(dst.ip));
-        pos += sizeof(struct hep_chunk_ip6);
-    }
+            case CAPTURE_EEP_CHUNK_SRC_IP6:
+                memcpy(&src_ip6, (void*) buffer + pos, sizeof(struct hep_chunk_ip6));
+                inet_ntop(AF_INET6, &src_ip6.data, src.ip, sizeof(src.ip));
+                break;
+            case CAPTURE_EEP_CHUNK_DST_IP6:
+                memcpy(&dst_ip6, (void*) buffer + pos, sizeof(struct hep_chunk_ip6));
+                inet_ntop(AF_INET6, &dst_ip6.data, dst.ip, sizeof(dst.ip));
+                break;
 #endif
+            case CAPTURE_EEP_CHUNK_SRC_PORT:
+                memcpy(&hg.src_port, (void*) buffer + pos, sizeof(hep_chunk_uint16_t));
+                src.port = ntohs(hg.src_port.data);
+                break;
+            case CAPTURE_EEP_CHUNK_DST_PORT:
+                memcpy(&hg.dst_port, (void*) buffer + pos, sizeof(hep_chunk_uint16_t));
+                dst.port = ntohs(hg.dst_port.data);
+                break;
+            case CAPTURE_EEP_CHUNK_TS_SEC:
+                memcpy(&hg.time_sec, (void*) buffer + pos, sizeof(hep_chunk_uint32_t));
+                header.ts.tv_sec = ntohl(hg.time_sec.data);
+                break;
+            case CAPTURE_EEP_CHUNK_TS_USEC:
+                memcpy(&hg.time_usec, (void*) buffer + pos, sizeof(hep_chunk_uint32_t));
+                header.ts.tv_usec = ntohl(hg.time_usec.data);
+                break;
+            case CAPTURE_EEP_CHUNK_PROTO_TYPE:
+                memcpy(&hg.proto_t, (void*) buffer + pos, sizeof(hep_chunk_uint8_t));
+                break;
+            case CAPTURE_EEP_CHUNK_CAPT_ID:
+                memcpy(&hg.capt_id, (void*) buffer + pos, sizeof(hep_chunk_uint32_t));
+                break;
+            case CAPTURE_EEP_CHUNK_KEEP_TM:
+                break;
+            case CAPTURE_EEP_CHUNK_AUTH_KEY:
+                memcpy(&authkey_chunk, (void*) buffer + pos, sizeof(authkey_chunk));
+                password_len = ntohs(authkey_chunk.length) - sizeof(authkey_chunk);
+                memcpy(password, (void*) buffer + pos + sizeof(hep_chunk_t), password_len);
+                break;
+            case CAPTURE_EEP_CHUNK_PAYLOAD:
+                memcpy(&payload_chunk, (void*) buffer + pos, sizeof(payload_chunk));
+                header.caplen = header.len = chunk_len - sizeof(hep_chunk_t);
+                payload = sng_malloc(header.caplen);
+                memcpy(payload, (void*) buffer + pos + sizeof(hep_chunk_t), header.caplen);
+                break;
+            case CAPTURE_EEP_CHUNK_CORRELATION_ID:
+                break;
+            default:
+                break;
+        }
 
-    /* SRC PORT */
-    src.port = ntohs(hg.src_port.data);
-    /* DST PORT */
-    dst.port = ntohs(hg.dst_port.data);
-    /* TIMESTAMP*/
-    header.ts.tv_sec = ntohl(hg.time_sec.data);
-    header.ts.tv_usec = ntohl(hg.time_usec.data);
-    /* Protocol TYPE */
-    /* Capture ID */
+        // Parse next chunk
+        pos += chunk_len;
+    }
 
-    /* auth key */
+    // Validate password
     if (eep_cfg.capt_srv_password != NULL) {
-        memcpy(&authkey_chunk, (void*) buffer + pos, sizeof(authkey_chunk));
-        pos += sizeof(authkey_chunk);
-
-        password_len = ntohs(authkey_chunk.length) - sizeof(authkey_chunk);
-        memcpy(password, (void*) buffer + pos, password_len);
-        pos += password_len;
-
-        // Validate the password
-        if (strncmp(password, eep_cfg.capt_srv_password, password_len) != 0)
+        // No password in packet
+        if (strlen(password) == 0)
+            return NULL;
+        // Check password matches configured
+        if (strncmp(password, eep_cfg.capt_srv_password, strlen(eep_cfg.capt_srv_password)) != 0)
             return NULL;
     }
 
-    /* Payload */
-    memcpy(&payload_chunk, (void*) buffer + pos, sizeof(payload_chunk));
-    pos += sizeof(payload_chunk);
-
-    // Calculate payload size
-    header.caplen = header.len = ntohs(payload_chunk.length) - sizeof(payload_chunk);
-
-    // Receive packet payload
-    payload = sng_malloc(header.caplen);
-    memcpy(payload, (void*) buffer + pos, header.caplen);
-
     // Create a new packet
-    pkt = packet_create((family == AF_INET)?4:6, proto, src, dst, 0);
+    pkt = packet_create((hg.ip_family.data == AF_INET)?4:6, hg.ip_proto.data, src, dst, 0);
     packet_add_frame(pkt, &header, payload);
     packet_set_type(pkt, PACKET_SIP_UDP);
     packet_set_payload(pkt, payload, header.caplen);
@@ -702,11 +764,10 @@ capture_eep_set_server_url(const char *url)
     char urlstr[256];
     char address[256], port[256];
 
-    memset(urlstr, 0, sizeof(urlstr));
     memset(address, 0, sizeof(address));
     memset(port, 0, sizeof(port));
 
-    strncpy(urlstr, url, strlen(url));
+    strncpy(urlstr, url, sizeof(urlstr));
     if (sscanf(urlstr, "%*[^:]:%[^:]:%s", address, port) == 2) {
         setting_set_value(SETTING_EEP_LISTEN, SETTING_ON);
         setting_set_value(SETTING_EEP_LISTEN_ADDR, address);
@@ -722,11 +783,10 @@ capture_eep_set_client_url(const char *url)
     char urlstr[256];
     char address[256], port[256];
 
-    memset(urlstr, 0, sizeof(urlstr));
     memset(address, 0, sizeof(address));
     memset(port, 0, sizeof(port));
 
-    strncpy(urlstr, url, strlen(url));
+    strncpy(urlstr, url, sizeof(urlstr));
     if (sscanf(urlstr, "%*[^:]:%[^:]:%s", address, port) == 2) {
         setting_set_value(SETTING_EEP_SEND, SETTING_ON);
         setting_set_value(SETTING_EEP_SEND_ADDR, address);

@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -45,6 +45,24 @@ packet_create(uint8_t ip_ver, uint8_t proto, address_t src, address_t dst, uint3
     packet->src = src;
     packet->dst = dst;
     return packet;
+}
+
+packet_t*
+packet_clone(packet_t *packet)
+{
+    packet_t *clone;
+    frame_t *frame;
+
+    // Create a new packet with the original information
+    clone =    packet_create(packet->ip_version, packet->proto, packet->src, packet->dst, packet->ip_id);
+    clone->tcp_seq = packet->tcp_seq;
+
+    // Append this frames to the original packet
+    vector_iter_t frames = vector_iterator(packet->frames);
+    while ((frame = vector_iterator_next(&frames)))
+        packet_add_frame(clone, frame->header, frame->data);
+
+    return clone;
 }
 
 void
@@ -126,6 +144,7 @@ packet_set_payload(packet_t *packet, u_char *payload, uint32_t payload_len)
         packet->payload = malloc(payload_len + 1);
         memset(packet->payload, 0, payload_len + 1);
         memcpy(packet->payload, payload, payload_len);
+        packet->payload[payload_len] = '\0';
         packet->payload_len = payload_len;
     }
 }

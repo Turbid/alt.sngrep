@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -52,7 +52,7 @@
 void
 usage()
 {
-    printf("Usage: %s [-hVcivNqrD] [-IO pcap_dump] [-d dev] [-l limit]"
+    printf("Usage: %s [-hVcivNqrD] [-IO pcap_dump] [-d dev] [-l limit] [-B buffer]"
 #if defined(WITH_GNUTLS) || defined(WITH_OPENSSL)
            " [-k keyfile]"
 #endif
@@ -65,6 +65,7 @@ usage()
            "    -d --device\t\t Use this capture device instead of default\n"
            "    -I --input\t\t Read captured data from pcap file\n"
            "    -O --output\t\t Write captured data to pcap file\n"
+           "    -B --buffer\t\t Set pcap buffer size in MB (default: 2)\n"
            "    -c --calls\t\t Only display dialogs starting with INVITE\n"
            "    -r --rtp\t\t Capture RTP packets payload\n"
            "    -l --limit\t\t Set capture limit to N dialogs\n"
@@ -74,7 +75,8 @@ usage()
            "    -q --quiet\t\t Don't print captured dialogs in no interface mode\n"
            "    -D --dump-config\t Print active configuration settings and exit\n"
            "    -f --config\t\t Read configuration from file\n"
-           "    -R --rotate\t\t Rotate calls when capture limit have been reached.\n"
+           "    -F --no-config\t Do not read configuration from default config file\n"
+           "    -R --rotate\t\t Rotate calls when capture limit have been reached\n"
 #ifdef USE_EEP
            "    -H --eep-send\t Homer sipcapture url (udp:X.X.X.X:XXXX)\n"
            "    -L --eep-listen\t Listen for encapsulated packets (udp:X.X.X.X:XXXX)\n"
@@ -89,7 +91,7 @@ void
 version()
 {
     printf("%s - %s\n"
-           "Copyright (C) 2013-2016 Irontec S.L.\n"
+           "Copyright (C) 2013-2018 Irontec S.L.\n"
            "License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.\n"
            "This is free software: you are free to change and redistribute it.\n"
            "There is NO WARRANTY, to the extent permitted by law.\n"
@@ -124,14 +126,18 @@ version()
 int
 main(int argc, char* argv[])
 {
-    int opt, idx, limit, only_calls, no_incomplete, i;
+    int opt, idx, limit, only_calls, no_incomplete, pcap_buffer_size, i;
     const char *device, *outfile;
     char bpf[512];
+#if defined(WITH_GNUTLS) || defined(WITH_OPENSSL)
     const char *keyfile;
+#endif
     const char *match_expr;
     int match_insensitive = 0, match_invert = 0;
-    int no_interface = 0, quiet = 0, rtp_capture = 0, rotate = 0;
+    int no_interface = 0, quiet = 0, rtp_capture = 0, rotate = 0, no_config = 0;
     vector_t *infiles = vector_create(0, 1);
+    vector_t *indevices = vector_create(0, 1);
+    char *token;
 
     // Program options
     static struct option long_options[] = {
@@ -140,18 +146,20 @@ main(int argc, char* argv[])
         { "device", required_argument, 0, 'd' },
         { "input", required_argument, 0, 'I' },
         { "output", required_argument, 0, 'O' },
+        { "buffer", required_argument, 0, 'B' },
 #if defined(WITH_GNUTLS) || defined(WITH_OPENSSL)
         { "keyfile", required_argument, 0, 'k' },
 #endif
         { "calls", no_argument, 0, 'c' },
         { "rtp", no_argument, 0, 'r' },
-        { "limit", no_argument, 0, 'l' },
+        { "limit", required_argument, 0, 'l' },
         { "icase", no_argument, 0, 'i' },
         { "invert", no_argument, 0, 'v' },
         { "no-interface", no_argument, 0, 'N' },
         { "dump-config", no_argument, 0, 'D' },
         { "rotate", no_argument, 0, 'R' },
         { "config", required_argument, 0, 'f' },
+        { "no-config", no_argument, 0, 'F' },
 #ifdef USE_EEP
         { "eep-listen", required_argument, 0, 'L' },
         { "eep-send", required_argument, 0, 'H' },
@@ -159,22 +167,9 @@ main(int argc, char* argv[])
         { "quiet", no_argument, 0, 'q' },
     };
 
-    // Initialize configuration options
-    init_options();
-
-    // Get initial values for configurable arguments
-    device = setting_get_value(SETTING_CAPTURE_DEVICE);
-    outfile = setting_get_value(SETTING_CAPTURE_OUTFILE);
-    keyfile = setting_get_value(SETTING_CAPTURE_KEYFILE);
-    limit = setting_get_intvalue(SETTING_CAPTURE_LIMIT);
-    only_calls = setting_enabled(SETTING_SIP_CALLS);
-    no_incomplete = setting_enabled(SETTING_SIP_NOINCOMPLETE);
-    rtp_capture = setting_enabled(SETTING_CAPTURE_RTP);
-    rotate = setting_enabled(SETTING_CAPTURE_ROTATE);
-
-    // Parse command line arguments
+    // Parse command line arguments that have high priority
     opterr = 0;
-    char *options = "hVd:I:O:pqtW:k:crl:ivNqDL:H:Rf:";
+    char *options = "hVd:I:O:B:pqtW:k:crl:ivNqDL:H:Rf:F";
     while ((opt = getopt_long(argc, argv, options, long_options, &idx)) != -1) {
         switch (opt) {
             case 'h':
@@ -183,14 +178,61 @@ main(int argc, char* argv[])
             case 'V':
                 version();
                 return 0;
+            case 'F':
+                no_config = 1;
+                break;
+            default:
+                break;
+        }
+	}
+
+    // Initialize configuration options
+    init_options(no_config);
+
+    // Get initial values for configurable arguments
+    device = setting_get_value(SETTING_CAPTURE_DEVICE);
+    outfile = setting_get_value(SETTING_CAPTURE_OUTFILE);
+    pcap_buffer_size = setting_get_intvalue(SETTING_CAPTURE_BUFFER);
+#if defined(WITH_GNUTLS) || defined(WITH_OPENSSL)
+    keyfile = setting_get_value(SETTING_CAPTURE_KEYFILE);
+#endif
+    limit = setting_get_intvalue(SETTING_CAPTURE_LIMIT);
+    only_calls = setting_enabled(SETTING_SIP_CALLS);
+    no_incomplete = setting_enabled(SETTING_SIP_NOINCOMPLETE);
+    rtp_capture = setting_enabled(SETTING_CAPTURE_RTP);
+    rotate = setting_enabled(SETTING_CAPTURE_ROTATE);
+
+    // Parse the rest of command line arguments
+    opterr = 0;
+    optind = 1;  /* reset getopt index */
+    while ((opt = getopt_long(argc, argv, options, long_options, &idx)) != -1) {
+        switch (opt) {
+            case 'h': /* handled before with higher priority options */
+                break;
+            case 'V': /* handled before with higher priority options */
+                break;
             case 'd':
-                device = optarg;
+                token = strtok(optarg, ",");
+                while (token) {
+                    vector_append(indevices, token);
+                    token = strtok(NULL, ",");
+                }
                 break;
             case 'I':
                 vector_append(infiles, optarg);
                 break;
             case 'O':
                 outfile = optarg;
+                break;
+            case 'B':
+                if(!(pcap_buffer_size = atoi(optarg))) {
+                    fprintf(stderr, "Invalid buffer size.\n");
+                    return 0;
+                }
+                if(!(pcap_buffer_size > 0 && pcap_buffer_size <= 2048)) {
+                    fprintf(stderr, "Buffer size not in range (0 < b <= 2048).\n");
+                    return 0;
+                }
                 break;
             case 'l':
                 if(!(limit = atoi(optarg))) {
@@ -233,6 +275,8 @@ main(int argc, char* argv[])
                 return 0;
             case 'f':
                 read_options(optarg);
+                break;
+            case 'F':  /* handled before with higher priority options */
                 break;
             case 'R':
                 rotate = 1;
@@ -294,23 +338,35 @@ main(int argc, char* argv[])
     sip_init(limit, only_calls, no_incomplete);
 
     // Set capture options
-    capture_init(limit, rtp_capture, rotate);
+    capture_init(limit, rtp_capture, rotate, pcap_buffer_size);
 
 #ifdef USE_EEP
     // Initialize EEP if enabled
     capture_eep_init();
 #endif
 
-    // If we have an input file, load it
-    if (vector_count(infiles)) {
-        for (i = 0; i < vector_count(infiles); i++) {
-            // Try to load file
-            if (capture_offline(vector_item(infiles, i), outfile) != 0)
-                return 1;
+    // If no device or files has been specified in command line, use default
+    if (vector_count(indevices) == 0 && vector_count(infiles) == 0) {
+        token = strdup(device);
+        token = strtok(token, ",");
+        while (token) {
+            vector_append(indevices, token);
+            token = strtok(NULL, ",");
         }
-    } else {
+        sng_free(token);
+    }
+
+    // If we have an input file, load it
+    for (i = 0; i < vector_count(infiles); i++) {
+        // Try to load file
+        if (capture_offline(vector_item(infiles, i), outfile) != 0)
+            return 1;
+    }
+
+    // If we have an input device, load it
+    for (i = 0; i < vector_count(indevices); i++) {
         // Check if all capture data is valid
-        if (capture_online(device, outfile) != 0)
+        if (capture_online(vector_item(indevices, i), outfile) != 0)
             return 1;
     }
 
@@ -369,7 +425,7 @@ main(int argc, char* argv[])
         ui_wait_for_input();
     } else {
         setbuf(stdout, NULL);
-        while(capture_status() != CAPTURE_OFFLINE) {
+        while(capture_is_running()) {
             if (!quiet)
                 printf("\rDialog count: %d", sip_calls_count());
             usleep(500 * 1000);

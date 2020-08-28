@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -61,14 +61,15 @@ enum sip_methods {
     SIP_METHOD_NOTIFY,
     SIP_METHOD_OPTIONS,
     SIP_METHOD_PUBLISH,
+    SIP_METHOD_INFO,
+    SIP_METHOD_REFER,
+    SIP_METHOD_UPDATE,
+    SIP_METHOD_KDMQ,
     SIP_METHOD_MESSAGE,
     SIP_METHOD_CANCEL,
     SIP_METHOD_BYE,
     SIP_METHOD_ACK,
     SIP_METHOD_PRACK,
-    SIP_METHOD_INFO,
-    SIP_METHOD_REFER,
-    SIP_METHOD_UPDATE,
 };
 
 //! Return values for sip_validate_packet
@@ -76,6 +77,7 @@ enum validate_result {
     VALIDATE_NOT_SIP        = -1,
     VALIDATE_PARTIAL_SIP    = 0,
     VALIDATE_COMPLETE_SIP   = 1,
+    VALIDATE_MULTIPLE_SIP   = 2
 };
 
 /**
@@ -284,6 +286,12 @@ vector_t *
 sip_calls_vector();
 
 /**
+ * @brief Return the active call list
+ */
+vector_t *
+sip_active_calls_vector();
+
+/**
  * @brief Return stats from call list
  *
  * @param total Total calls processed
@@ -331,6 +339,15 @@ sip_parse_extra_headers(sip_msg_t *msg, const u_char *payload);
  */
 void
 sip_calls_clear();
+
+/**
+ * @brief Remove al calls
+ *
+ * This funtion will clear the call list of calls other than ones
+ * fitting the current filter
+ */
+void
+sip_calls_clear_soft();
 
 /**
  * @brief Remove first call in the call list

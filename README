@@ -10,13 +10,13 @@ as PCAP viewer.
 ## Installing
 
 ### Binaries
-* [Debian / Ubuntu] (https://github.com/irontec/sngrep/wiki/Installing-Binaries#debian--ubuntu)
+* [Debian / Ubuntu](https://github.com/irontec/sngrep/wiki/Installing-Binaries#debian--ubuntu)
 * [CentOS / RedHat / Fedora](https://github.com/irontec/sngrep/wiki/Installing-Binaries#centos--fedora--rhel)
 * [Alpine Linux](https://github.com/irontec/sngrep/wiki/Installing-Binaries#alpine-linux)
 * [Gentoo](https://github.com/irontec/sngrep/wiki/Installing-Binaries#gentoo)
 * [Arch](https://github.com/irontec/sngrep/wiki/Installing-Binaries#arch)
-* [OSX] (https://github.com/irontec/sngrep/wiki/Installing-Binaries#osx)
-* [OpenWRT/LEDE] (https://github.com/irontec/sngrep/wiki/Installing-Binaries#openwrtlede)
+* [OSX](https://github.com/irontec/sngrep/wiki/Installing-Binaries#osx)
+* [OpenWRT/LEDE](https://github.com/irontec/sngrep/wiki/Installing-Binaries#openwrtlede)
 
 ### Building from sources
 Prerequisites
@@ -46,7 +46,7 @@ You can pass following flags to ./configure to enable some features
 | `--enable-ipv6`   | Enable IPv6 packet capture support. |
 | `--enable-eep`   | Enable EEP packet send/receive support. |
 
-You can find [detailed instructions for some distributions] (https://github.com/irontec/sngrep/wiki/Building) on wiki.
+You can find [detailed instructions for some distributions](https://github.com/irontec/sngrep/wiki/Building) on wiki.
 
 ## Usage
 
@@ -63,16 +63,16 @@ or live capturing, saving packets to a new file
 
 ## Configuration
 
-You can configure some options using [sngreprc] (https://github.com/irontec/sngrep/wiki/Configuration) file
+You can configure some options using [sngreprc](https://github.com/irontec/sngrep/wiki/Configuration) file
 
 ## Frequent Asked Questions
 Any feedback, request or question are welcomed at [#sngrep](https://webchat.freenode.net/?channels=sngrep) channel at irc.freenode.net
 
 See FAQ on [Github Wiki](https://github.com/irontec/sngrep/wiki#frequent-asked-questions)
 
-## License 
+## License
     sngrep - SIP Messages flow viewer
-    Copyright (C) 2013-2016 Irontec S.L.
+    Copyright (C) 2013-2018 Irontec S.L.
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by

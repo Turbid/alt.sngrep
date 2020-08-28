@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -240,6 +240,10 @@ call_raw_handle_key(ui_t *ui, int key)
                 info->scroll -= rnpag_steps;
                 break;
             case ACTION_SAVE:
+                if (capture_sources_count() > 1) {
+                    dialog_run("Saving is not possible when multiple input sources are specified.");
+                    break;
+                }
                 if (info->group) {
                     // KEY_S, Display save panel
                     next_ui = ui_create_panel(PANEL_SAVE);
@@ -262,8 +266,22 @@ call_raw_handle_key(ui_t *ui, int key)
                 }
                 break;
             case ACTION_CLEAR_CALLS:
+            case ACTION_CLEAR_CALLS_SOFT:
                 // Propagate the key to the previous panel
                 return KEY_PROPAGATED;
+            case ACTION_SHOW_ALIAS:
+                setting_toggle(SETTING_DISPLAY_ALIAS);
+                // Create a new pad (forces messages draw)
+                delwin(info->pad);
+                info->pad = newpad(500, COLS);
+                info->last = NULL;
+                // Force refresh panel
+                if (info->group) {
+                    call_raw_set_group(info->group);
+                } else {
+                    call_raw_set_msg(info->msg);
+                }
+                break;
             default:
                 // Parse next action
                 continue;

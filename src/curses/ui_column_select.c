@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
  ** along with this program.  If not, see <http://www.gnu.org/licenses/>.
  **
  ****************************************************************************/
+
 /**
  * @file ui_column_select.c
  * @author Ivan Alonso [aka Kaian] <kaian@irontec.com>
@@ -373,26 +374,50 @@ column_select_save_columns(ui_t *ui)
     FILE *fi, *fo;
     char columnopt[128];
     char line[1024];
-    char *home = getenv("HOME");
-    char userconf[128], tmpfile[128];
+    char *rcfile;
+    char *userconf = NULL;
+    char *tmpfile  = NULL;
 
-    // No home dir...
-    if (!home)
+    // Use current $SNGREPRC or $HOME/.sngreprc file
+    if ((rcfile = getenv("SNGREPRC"))) {
+        if ((userconf = sng_malloc(strlen(rcfile) + RCFILE_EXTRA_LEN))) {
+            if ((tmpfile = sng_malloc(strlen(rcfile) + RCFILE_EXTRA_LEN))) {
+                sprintf(userconf, "%s", rcfile);
+                sprintf(tmpfile, "%s.old", rcfile);
+            } else {
+                sng_free(userconf);
+                return;
+            }
+        } else {
+            return;
+        }
+    } else if ((rcfile = getenv("HOME"))) {
+        if ((userconf = sng_malloc(strlen(rcfile) + RCFILE_EXTRA_LEN))) {
+            if ((tmpfile = sng_malloc(strlen(rcfile) + RCFILE_EXTRA_LEN))) {
+                sprintf(userconf, "%s/.sngreprc", rcfile);
+                sprintf(tmpfile, "%s/.sngreprc.old", rcfile);
+            } else {
+                sng_free(userconf);
+                return;
+            }
+        } else {
+            return;
+        }
+    } else {
         return;
-
-    // Read current $HOME/.sngreprc file
-    sprintf(userconf, "%s/.sngreprc", home);
-    sprintf(tmpfile, "%s/.sngreprc.old", home);
+    }
 
     // Remove old config file
     unlink(tmpfile);
 
-    // Move home file to temporal dir
+    // Move user conf file to temporal file
     rename(userconf, tmpfile);
 
     // Create a new user conf file
     if (!(fo = fopen(userconf, "w"))) {
         dialog_run("Unable to open %s: %s", userconf, strerror(errno));
+        sng_free(userconf);
+        sng_free(tmpfile);
         return;
     }
 
@@ -403,7 +428,7 @@ column_select_save_columns(ui_t *ui)
         while (fgets(line, 1024, fi) != NULL) {
             // Ignore lines starting with set (but keep settings)
             if (strncmp(line, "set ", 4) || strncmp(line, "set cl.column", 13)) {
-                // Put everyting in new .sngreprc file
+                // Put everyting in new user conf file
                 fputs(line, fo);
             }
         }
@@ -427,6 +452,9 @@ column_select_save_columns(ui_t *ui)
 
     // Show a information dialog
     dialog_run("Column layout successfully saved to %s", userconf);
+
+    sng_free(userconf);
+    sng_free(tmpfile);
 }
 
 
@@ -443,20 +471,31 @@ column_select_move_item(ui_t *ui, ITEM *item, int pos)
     // Swap position with destination
     int item_pos = item_index(item);
     info->items[item_pos] = info->items[pos];
-    info->items[item_pos]->index = item_pos;
     info->items[pos] = item;
-    info->items[pos]->index = pos;
+    set_menu_items(info->menu, info->items);
 }
 
 void
 column_select_toggle_item(ui_t *ui, ITEM *item)
 {
+    // Get panel information
+    column_select_info_t *info = column_select_info(ui);
+
+    int pos = item_index(item);
+
     // Change item name
     if (!strncmp(item_name(item), "[ ]", 3)) {
-        item->name.str = "[*]";
+        info->items[pos] = new_item("[*]", item_description(item));
     } else {
-        item->name.str = "[ ]";
+        info->items[pos] = new_item("[ ]", item_description(item));
     }
+
+    // Restore menu item
+    set_item_userptr(info->items[pos], item_userptr(item));
+    set_menu_items(info->menu, info->items);
+
+    // Destroy old item
+    free_item(item);
 }
 
 void
@@ -477,4 +516,8 @@ column_select_update_menu(ui_t *ui)
     // Move until the current position is set
     set_top_row(info->menu, top_idx);
     set_current_item(info->menu, current);
+
+    // Force menu redraw
+    menu_driver(info->menu, REQ_UP_ITEM);
+    menu_driver(info->menu, REQ_DOWN_ITEM);
 }

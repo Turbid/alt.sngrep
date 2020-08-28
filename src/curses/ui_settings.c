@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -87,6 +87,7 @@ settings_entry_t entries[] = {
     { CAT_SETTINGS_EEP_HOMER,  FLD_SETTINGS_EEP_LISTEN_ADDR,    SETTING_EEP_LISTEN_ADDR,    "Listen EEP packet address ................." },
     { CAT_SETTINGS_EEP_HOMER,  FLD_SETTINGS_EEP_LISTEN_PORT,    SETTING_EEP_LISTEN_PORT,    "Listen EEP packet port ...................." },
     { CAT_SETTINGS_EEP_HOMER,  FLD_SETTINGS_EEP_LISTEN_PASS,    SETTING_EEP_LISTEN_PASS,    "EEP server password ......................." },
+    { CAT_SETTINGS_EEP_HOMER,  FLD_SETTINGS_EEP_LISTEN_UUID,    SETTING_EEP_LISTEN_UUID,    "EEP server expects UUID (Asterisk) ........" },
 #endif
     { 0 , 0, 0, NULL },
 };
@@ -100,7 +101,7 @@ settings_create(ui_t *ui)
     int field = 0;
 
     // Cerate a new window for the panel and form
-    ui_panel_create(ui, 22, 70);
+    ui_panel_create(ui, 24, 70);
 
     // Initialize Filter panel specific data
     info = sng_malloc(sizeof(settings_info_t));
@@ -452,32 +453,55 @@ ui_settings_save(ui_t *ui)
     int i;
     FILE *fi, *fo;
     char line[1024];
-    char *home = getenv("HOME");
-    char userconf[128], tmpfile[128];
+    char *rcfile;
+    char *userconf = NULL;
+    char *tmpfile  = NULL;
     char field_value[180];
     settings_entry_t *entry;
 
     // Get panel information
     settings_info_t *info = settings_info(ui);
 
-    // No home dir...
-    if (!home) {
-        dialog_run("Unable to save configuration. User has no $HOME dir.");
+    // Use current $SNGREPRC or $HOME/.sngreprc file
+    if ((rcfile = getenv("SNGREPRC"))) {
+        if ((userconf = sng_malloc(strlen(rcfile) + RCFILE_EXTRA_LEN))) {
+            if ((tmpfile = sng_malloc(strlen(rcfile) + RCFILE_EXTRA_LEN))) {
+                sprintf(userconf, "%s", rcfile);
+                sprintf(tmpfile, "%s.old", rcfile);
+            } else {
+                sng_free(userconf);
+                return;
+            }
+        } else {
+            return;
+        }
+    } else if ((rcfile = getenv("HOME"))) {
+        if ((userconf = sng_malloc(strlen(rcfile) + RCFILE_EXTRA_LEN))) {
+            if ((tmpfile = sng_malloc(strlen(rcfile) + RCFILE_EXTRA_LEN))) {
+                sprintf(userconf, "%s/.sngreprc", rcfile);
+                sprintf(tmpfile, "%s/.sngreprc.old", rcfile);
+            } else {
+                sng_free(userconf);
+                return;
+            }
+        } else {
+            return;
+        }
+    } else {
+        dialog_run("Unable to save configuration. User has no $SNGREPRC or $HOME dir.");
         return;
     }
-
-    // Read current $HOME/.sngreprc file
-    sprintf(userconf, "%s/.sngreprc", home);
-    sprintf(tmpfile, "%s/.sngreprc.old", home);
 
     // Remove old config file
     unlink(tmpfile);
 
-    // Move home file to temporal dir
+    // Move user conf file to temporal file
     rename(userconf, tmpfile);
 
     // Create a new user conf file
     if (!(fo = fopen(userconf, "w"))) {
+        sng_free(userconf);
+        sng_free(tmpfile);
         return;
     }
 
@@ -487,7 +511,7 @@ ui_settings_save(ui_t *ui)
         while (fgets(line, 1024, fi) != NULL) {
             // Ignore lines starting with set (but keep set column ones)
             if (strncmp(line, "set ", 4) || !strncmp(line, "set cl.column", 13)) {
-                // Put everyting in new .sngreprc file
+                // Put everyting in new user conf file
                 fputs(line, fo);
             }
         }
@@ -508,4 +532,7 @@ ui_settings_save(ui_t *ui)
     fclose(fo);
 
     dialog_run("Settings successfully saved to %s", userconf);
+
+    sng_free(userconf);
+    sng_free(tmpfile);
 }

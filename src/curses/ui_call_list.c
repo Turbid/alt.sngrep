@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -35,6 +35,9 @@
 #include "option.h"
 #include "filter.h"
 #include "capture.h"
+#ifdef USE_EEP
+#include "capture_eep.h"
+#endif
 #include "ui_manager.h"
 #include "ui_call_list.h"
 #include "ui_call_flow.h"
@@ -177,7 +180,7 @@ call_list_resize(ui_t *ui)
     ui->height = maxy;
 
     // Calculate available printable area
-    wresize(info->list_win, maxy - 5, maxx - 4);
+    wresize(info->list_win, maxy - 6, maxx); //-4
     // Force list redraw
     call_list_clear(ui);
 
@@ -203,7 +206,7 @@ call_list_draw_header(ui_t *ui)
     ui_clear_line(ui, 1);
 
     // Print Open filename in Offline mode
-    if ((infile = capture_input_file()))
+    if (!capture_is_online() && (infile = capture_input_file()))
         mvwprintw(ui->win, 1, 77, "Filename: %s", infile);
 
     mvwprintw(ui->win, 1, 2, "Current Mode: ");
@@ -217,6 +220,16 @@ call_list_draw_header(ui_t *ui)
     // Get online mode capture device
     if ((device = capture_device()))
         wprintw(ui->win, "[%s]", device);
+
+#ifdef USE_EEP
+    const char *eep_port;
+    if ((eep_port = capture_eep_send_port())) {
+        wprintw(ui->win, "[H:%s]", eep_port);
+    }
+    if ((eep_port = capture_eep_listen_port())) {
+        wprintw(ui->win, "[L:%s]", eep_port);
+    }
+#endif
 
     wattroff(ui->win, COLOR_PAIR(CP_GREEN_ON_DEF));
     wattroff(ui->win, COLOR_PAIR(CP_RED_ON_DEF));
@@ -294,7 +307,7 @@ call_list_draw_header(ui_t *ui)
 
     // Print calls count (also filtered)
     sip_stats_t stats = sip_calls_stats();
-    mvwprintw(ui->win, 1, 35, "%*s", 35, "");
+    mvwprintw(ui->win, 1, 45, "%*s", 30, "");
     if (stats.total != stats.displayed) {
         mvwprintw(ui->win, 1, 45, "%s: %d (%d displayed)", countlb, stats.total, stats.displayed);
     } else {
@@ -317,10 +330,11 @@ call_list_draw_footer(ui_t *ui)
         key_action_key_str(ACTION_CLEAR_CALLS), "Clear",
         key_action_key_str(ACTION_SHOW_FILTERS), "Filter",
         key_action_key_str(ACTION_SHOW_SETTINGS), "Settings",
+        key_action_key_str(ACTION_CLEAR_CALLS_SOFT), "Clear with Filter",
         key_action_key_str(ACTION_SHOW_COLUMNS), "Columns"
     };
 
-    ui_draw_bindings(ui, keybindings, 22);
+    ui_draw_bindings(ui, keybindings, 23);
 }
 
 void
@@ -642,6 +656,10 @@ call_list_handle_key(ui_t *ui, int key)
                 ui_create_panel(PANEL_STATS);
                 break;
             case ACTION_SAVE:
+                if (capture_sources_count() > 1) {
+                    dialog_run("Saving is not possible when multiple input sources are specified.");
+                    break;
+                }
                 next_ui = ui_create_panel(PANEL_SAVE);
                 save_set_group(next_ui, info->group);
                 break;
@@ -652,6 +670,12 @@ call_list_handle_key(ui_t *ui, int key)
             case ACTION_CLEAR_CALLS:
                 // Remove all stored calls
                 sip_calls_clear();
+                // Clear List
+                call_list_clear(ui);
+                break;
+            case ACTION_CLEAR_CALLS_SOFT:
+                // Remove stored calls, keeping the currently displayed calls
+                sip_calls_clear_soft();
                 // Clear List
                 call_list_clear(ui);
                 break;
@@ -723,7 +747,7 @@ int
 call_list_handle_form_key(ui_t *ui, int key)
 {
     int field_idx;
-    char dfilter[256];
+    char *dfilter;
     int action = -1;
 
     // Get panel information
@@ -793,13 +817,16 @@ call_list_handle_form_key(ui_t *ui, int key)
     form_driver(info->form, REQ_VALIDATION);
 
     // Store dfilter input
-    // We trim spaces with sscanf because and empty field is stored as space characters
-    memset(dfilter, 0, sizeof(dfilter));
-    strcpy(dfilter, field_buffer(info->fields[FLD_LIST_FILTER], 0));
+    int field_len = strlen(field_buffer(info->fields[FLD_LIST_FILTER], 0));
+    dfilter = malloc(field_len + 1);
+    memset(dfilter, 0, field_len + 1);
+    strncpy(dfilter, field_buffer(info->fields[FLD_LIST_FILTER], 0), field_len);
+    // Trim any trailing spaces
     strtrim(dfilter);
 
     // Set display filter
     filter_set(FILTER_CALL_LIST, strlen(dfilter) ? dfilter : NULL);
+    free(dfilter);
 
     // Return if this panel has handled or not the key
     return (action == ERR) ? KEY_NOT_HANDLED : KEY_HANDLED;
@@ -933,7 +960,7 @@ call_list_help(ui_t *ui)
     mvwprintw(help_win, 17, 2, "F5/Ctrl-L   Clear call list (can not be undone!)");
     mvwprintw(help_win, 18, 2, "F6/R        Show selected call messages in raw mode");
     mvwprintw(help_win, 19, 2, "F7/F        Show filter options");
-    mvwprintw(help_win, 20, 2, "F8/c        Turn on/off window colours");
+    mvwprintw(help_win, 20, 2, "F8/o        Show Settings");
     mvwprintw(help_win, 21, 2, "F10/t       Select displayed columns");
     mvwprintw(help_win, 22, 2, "i/I         Set display filter to invite");
     mvwprintw(help_win, 23, 2, "p           Stop/Resume packet capture");

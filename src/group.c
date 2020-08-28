@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -64,6 +64,7 @@ call_group_has_changed(sip_call_group_t *group)
     sip_call_t *call = NULL;
     while ((call = call_group_get_next(group, call))) {
         if (call_has_changed(call)) {
+            call->changed = false;
             changed = true;
 
             // If this group is based on a Call-Id, check there are no new call related
@@ -222,47 +223,70 @@ call_group_msg_number(sip_call_group_t *group, sip_msg_t *msg)
 sip_msg_t *
 call_group_get_next_msg(sip_call_group_t *group, sip_msg_t *msg)
 {
-    sip_msg_t *next = NULL;
-    sip_msg_t *cand;
-    vector_iter_t msgs;
-    sip_call_t *call;
-    int i;
+    sip_msg_t *next;
 
-    for (i = 0; i < vector_count(group->calls); i++) {
-
-        call = vector_item(group->calls, i);
-        msgs = vector_iterator(call->msgs);
-
-        if (msg && call == msg_get_call(msg))
-            vector_iterator_set_current(&msgs, msg->index);
-
-        if (group->sdp_only)
-            vector_iterator_set_filter(&msgs, msg_has_sdp);
-
-        cand = NULL;
-        while ((cand = vector_iterator_next(&msgs))) {
-            // candidate must be between msg and next
-            if (msg_is_older(cand, msg) && (!next || !msg_is_older(cand, next))) {
-                next = cand;
-                break;
-            }
+    if (call_group_count(group) == 1) {
+        sip_call_t *call = vector_first(group->calls);
+        vector_iter_t it = vector_iterator(call->msgs);
+        vector_iterator_set_current(&it, vector_index(call->msgs, msg));
+        next = vector_iterator_next(&it);
+    } else {
+        vector_t *messages = vector_create(1,10);
+        vector_set_sorter(messages, call_group_msg_sorter);
+        vector_iter_t callsit = vector_iterator(group->calls);
+        sip_call_t *call;
+        while ((call = vector_iterator_next(&callsit))) {
+            vector_append_vector(messages, call->msgs);
         }
+
+        if (msg == NULL) {
+            next = vector_first(messages);
+        } else {
+            next = vector_item(messages, vector_index(messages, msg) + 1);
+        }
+        vector_destroy(messages);
     }
 
-    return sip_parse_msg(next);
+    next = sip_parse_msg(next);
+    if (next && group->sdp_only && !msg_has_sdp(next)) {
+        return call_group_get_next_msg(group, next);
+    }
+
+    return next;
 }
 
 sip_msg_t *
 call_group_get_prev_msg(sip_call_group_t *group, sip_msg_t *msg)
 {
-    sip_msg_t *next = NULL;
-    sip_msg_t *prev = NULL;
+    sip_msg_t *prev;
 
-    // FIXME Horrible performance for huge dialogs
-    while ((next = call_group_get_next_msg(group, next))) {
-        if (next == msg)
-            break;
-        prev = next;
+    if (call_group_count(group) == 1) {
+        sip_call_t *call = vector_first(group->calls);
+        vector_iter_t it = vector_iterator(call->msgs);
+        vector_iterator_set_current(&it, vector_index(call->msgs, msg));
+        prev = vector_iterator_prev(&it);
+    } else {
+        vector_t *messages = vector_create(1, 10);
+        vector_set_sorter(messages, call_group_msg_sorter);
+
+
+        vector_iter_t callsit = vector_iterator(group->calls);
+        sip_call_t *call;
+        while ((call = vector_iterator_next(&callsit))) {
+            vector_append_vector(messages, call->msgs);
+        }
+
+        if (msg == NULL) {
+            prev = vector_last(messages);
+        } else {
+            prev = vector_item(messages, vector_index(messages, msg) - 1);
+        }
+        vector_destroy(messages);
+    }
+
+    prev = sip_parse_msg(prev);
+    if (prev && group->sdp_only && !msg_has_sdp(prev)) {
+        return call_group_get_prev_msg(group, prev);
     }
 
     return prev;
@@ -296,3 +320,26 @@ call_group_get_next_stream(sip_call_group_t *group, rtp_stream_t *stream)
     return next;
 }
 
+void
+call_group_msg_sorter(vector_t *vector, void *item)
+{
+    struct timeval curts, prevts;
+    int count = vector_count(vector);
+    int i;
+
+    // Current and last packet times
+    curts = msg_get_time(item);
+
+    for (i = count - 2 ; i >= 0; i--) {
+        // Get previous packet
+        prevts = msg_get_time(vector_item(vector, i));
+        // Check if the item is already in a sorted position
+        if (timeval_is_older(curts, prevts)) {
+            vector_insert(vector, item, i + 1);
+            return;
+        }
+    }
+
+    // Put this item at the begining of the vector
+    vector_insert(vector, item, 0);
+}

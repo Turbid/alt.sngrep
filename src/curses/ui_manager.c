@@ -2,8 +2,8 @@
  **
  ** sngrep - SIP Messages flow viewer
  **
- ** Copyright (C) 2013-2016 Ivan Alonso (Kaian)
- ** Copyright (C) 2013-2016 Irontec SL. All rights reserved.
+ ** Copyright (C) 2013-2018 Ivan Alonso (Kaian)
+ ** Copyright (C) 2013-2018 Irontec SL. All rights reserved.
  **
  ** This program is free software: you can redistribute it and/or modify
  ** it under the terms of the GNU General Public License as published by
@@ -68,6 +68,7 @@ ncurses_init()
 {
     int bg, fg;
     const char *term;
+
     // Set Locale
     setlocale(LC_CTYPE, "");
 
@@ -240,7 +241,7 @@ ui_wait_for_input()
             } else if (hld == KEY_PROPAGATED) {
                 // Destroy current panel
                 ui_destroy(ui);
-                // Try to handle this key with the previus panel
+                // Try to handle this key with the previous panel
                 ui = ui_find_by_panel(panel_below(NULL));
             } else {
                 // Key not handled by UI nor propagated. Use default handler
@@ -348,6 +349,7 @@ draw_message_pos(WINDOW *win, sip_msg_t *msg, int starting)
     int height, width, line, column, i;
     const char *cur_line, *payload, *method = NULL;
     int syntax = setting_enabled(SETTING_SYNTAX);
+    const char *nonascii = setting_get_value(SETTING_CR_NON_ASCII);
 
     // Default text format
     int attrs = A_NORMAL | COLOR_PAIR(CP_DEFAULT);
@@ -450,7 +452,11 @@ draw_message_pos(WINDOW *win, sip_msg_t *msg, int starting)
         }
 
         // Put next character in position
-        mvwaddch(win, line, column++, payload[i]);
+        if (isascii(payload[i])) {
+            mvwaddch(win, line, column++, payload[i]);
+        } else {
+            mvwaddch(win, line, column++, *nonascii);
+        }
 
         // Stop if we've reached the bottom of the window
         if (line == height)
