@@ -1,3 +1,53 @@
+2022-08-31 Ivan Alonso <kaian@irontec.com>
+	* sngrep 1.6.0 released
+
+	* capture: added compatibility with openssl >= 3.5.0
+	* capture: fixed memory leak while rotating dialogs
+	* capture: added save file rotation through SIPHUP signal
+	* capture: added support for opening gzip compressed input files
+	* hep: received HEP packets can now be saved to PCAP files
+	* core: added support for PCRE2 library
+	* cf: raw payload preview now properly displays characters near window borders
+	* cli: properly display captured dialog count when no interface is used
+
+2022-04-26 Ivan Alonso <kaian@irontec.com>
+	* sngrep 1.5.0 released
+
+	* capture: add support for IP-IP encapsulation
+	* capture: add support for IPv6 fragments reassembly
+	* hep: add support for saving HEP received packets to PCAP
+	* tls: check client TLS version in gnutls code
+	* ui: fixed a crash when leaving ncurses screens
+
+2021-11-19 Ivan Alonso <kaian@irontec.com>
+	* sngrep 1.4.10 released
+
+	* build: fix compilation warnings on MacOS 10.15
+	* build: fix compilation errors when using -Werror=format-security
+	* capture: properly set transport as TCP for assembled TCP messages
+	* config: alias keyword now supports IP:PORT format
+	* filter: increased size of src and dst fields for IPv6 addresses
+
+2021-05-20 Ivan Alonso <kaian@irontec.com>
+	* sngrep 1.4.9 released
+
+	* capture: add support for HEP/EEP protocol packet capture
+	* capture: fixed a buffer overflow while validating TCP packets
+	* core: fixed timestamp formats for OpenBSD
+	* call flow: improved display for B-leg extended flows
+
+2020-11-10 Ivan Alonso <kaian@irontec.com>
+	* sngrep 1.4.8 released
+
+	* capture: add support for IPv6 SDP connection address
+	* capture: fixed a crash while parsing INVITES without R-URI
+	* capture: fixed a crash while parsing malformed Req/Resp lines
+	* call flow: improved IPv6 RTP columns address display
+	* core: code cleanup removing unused variables
+	* core: fixed multiple snprintf memory overflows
+	* core: avoid crash when linking against ncurses without tinfo
+
+
 2020-05-21 Ivan Alonso <kaian@irontec.com>
 	* sngrep 1.4.7 released
 

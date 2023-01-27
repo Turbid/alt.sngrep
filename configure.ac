@@ -1,5 +1,5 @@
 AC_PREREQ([2.59])
-AC_INIT([sngrep], [1.4.7], [kaian@irontec.com], [sngrep], [http://www.irontec.com/])
+AC_INIT([sngrep], [1.6.0], [kaian@irontec.com], [sngrep], [http://www.irontec.com/])
 AM_INIT_AUTOMAKE([1.9])
 AC_CONFIG_HEADERS([src/config.h])
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
@@ -29,6 +29,9 @@ AC_PROG_EGREP
 AC_LANG(C)
 AM_PROG_CC_C_O
 
+# we might want to use this with zlib for compressed pcap support
+AC_CHECK_FUNCS([fopencookie])
+
 #######################################################################
 # Check for other REQUIRED libraries
 AC_CHECK_LIB([pthread], [pthread_create], [], [
@@ -51,14 +54,14 @@ AC_ARG_ENABLE([unicode],
 	[AC_SUBST(UNICODE, no)]
 )
 
-AS_IF([test "x$enable_unicode" == "xyes"], [
+AS_IF([test "x$enable_unicode" = "xyes"], [
 	# Ncurses with wide-character support
 	AC_DEFINE([WITH_UNICODE], [], [Compile With Unicode compatibility])
 
-   SNGREP_CHECK_SCRIPT([ncursesw6], [addnwstr], [WITH_UNICODE], "ncursesw6-config",
+   SNGREP_CHECK_SCRIPT([ncursesw], [addnwstr], [WITH_UNICODE], "ncursesw6-config",
     SNGREP_CHECK_SCRIPT([ncursesw], [addnwstr], [WITH_UNICODE], "ncursesw5-config",
      SNGREP_CHECK_SCRIPT([ncurses], [addnwstr], [WITH_UNICODE], "ncurses5-config",
-      SNGREP_CHECK_LIB([ncursesw6], [addnwstr], [WITH_UNICODE],
+      SNGREP_CHECK_LIB([ncursesw], [addnwstr], [WITH_UNICODE],
        SNGREP_CHECK_LIB([ncursesw], [addnwstr], [WITH_UNICODE],
         SNGREP_CHECK_LIB([ncurses], [addnwstr], [WITH_UNICODE],
 	))))))
@@ -73,6 +76,10 @@ AS_IF([test "x$enable_unicode" == "xyes"], [
 
 	AC_CHECK_LIB([menuw], [new_item], [], [
 	    AC_MSG_ERROR([ You need to have ncurses menuw library installed to compile sngrep.])
+	])
+
+	AC_SEARCH_LIBS([keyname], [tinfow], [], [
+	    AC_MSG_ERROR([ You need to have ncurses tinfow library installed to compile sngrep.])
 	])
 	], [
 
@@ -96,6 +103,10 @@ AS_IF([test "x$enable_unicode" == "xyes"], [
 	AC_CHECK_LIB([menu], [new_item], [], [
 	    AC_MSG_ERROR([ You need to have ncurses menu library installed to compile sngrep.])
 	])
+
+	AC_SEARCH_LIBS([keyname], [tinfo], [], [
+	    AC_MSG_ERROR([ You need to have ncurses tinfo library installed to compile sngrep.])
+	])
 ])
 
 ####
@@ -107,7 +118,7 @@ AC_ARG_WITH([gnutls],
     [AC_SUBST(WITH_GNUTLS, no)]
 )
 
-AS_IF([test "x$WITH_GNUTLS" == "xyes"], [
+AS_IF([test "x$WITH_GNUTLS" = "xyes"], [
 
     m4_ifdef([PKG_CHECK_MODULES], [
         PKG_CHECK_MODULES([LIBGNUTLS], [gnutls])
@@ -144,8 +155,8 @@ AC_ARG_WITH([openssl],
     [AC_SUBST(WITH_OPENSSL, no)]
 )
 
-AS_IF([test "x$WITH_OPENSSL" == "xyes"], [
-	AS_IF([test "x$WITH_GNUTLS" == "xyes"], [
+AS_IF([test "x$WITH_OPENSSL" = "xyes"], [
+	AS_IF([test "x$WITH_GNUTLS" = "xyes"], [
 	    AC_MSG_ERROR([ GnuTLS and OpenSSL can not be enabled at the same time ])
 	], [])
     m4_ifdef([PKG_CHECK_MODULES], [
@@ -171,7 +182,7 @@ AC_ARG_WITH([pcre],
     [AC_SUBST(WITH_PCRE, no)]
 )
 
-AS_IF([test "x$WITH_PCRE" == "xyes"], [
+AS_IF([test "x$WITH_PCRE" = "xyes"], [
 	AC_CHECK_HEADER([pcre/pcre.h], [], [
 	    AC_MSG_ERROR([ You need libpcre development files installed to compile with pcre support.])
 	])
@@ -179,6 +190,34 @@ AS_IF([test "x$WITH_PCRE" == "xyes"], [
 	    AC_MSG_ERROR([ You need libpcre library installed to compile with pcre support.])
 	])
 	AC_DEFINE([WITH_PCRE],[],[Compile With Perl Compatible regular expressions support])
+], [])
+
+####
+#### PCRE2 Support
+####
+AC_ARG_WITH([pcre2],
+    AS_HELP_STRING([--with-pcre2], [Enable Perl compatible regular expressions (v2)]),
+    [AC_SUBST(WITH_PCRE2, $withval)],
+    [AC_SUBST(WITH_PCRE2, no)]
+)
+
+AS_IF([test "x$WITH_PCRE2" = "xyes"], [
+    AS_IF([test "x$WITH_PCRE" = "xyes"], [
+        AC_MSG_ERROR([libpcre-2 and libpcre-3 can not be enabled at the same time ])
+    ], [])
+    AC_DEFINE([PCRE2_CODE_UNIT_WIDTH], [8], [Required for including pcre2.h])
+    AC_SUBST(PCRE2_CODE_UNIT_WIDTH, 8)
+    m4_ifdef([PKG_CHECK_MODULES], [
+        PKG_CHECK_MODULES([PCRE2], [libpcre2-8])
+    ], [
+	    AC_CHECK_HEADER([pcre2.h], [], [
+	        AC_MSG_ERROR([ You need libpcre2 development files installed to compile with pcre support.])
+	    ])
+	    AC_CHECK_LIB([pcre2-8], [pcre2_compile_8], [], [
+	        AC_MSG_ERROR([ You need libpcre2 library installed to compile with pcre support.])
+	    ])
+    ])
+	AC_DEFINE([WITH_PCRE2],[],[Compile With Perl Compatible regular expressions support])
 ], [])
 
 ####
@@ -190,7 +229,7 @@ AC_ARG_ENABLE([ipv6],
     [AC_SUBST(USE_IPV6, no)]
 )
 
-AS_IF([test "x$USE_IPV6" == "xyes"], [
+AS_IF([test "x$USE_IPV6" = "xyes"], [
 	AC_CHECK_HEADERS([netinet/in.h netinet/ip6.h], [], [
 	    AC_MSG_ERROR([ You dont seem to have ipv6 support (no ip6.h found).])
 	], [
@@ -215,15 +254,37 @@ AC_ARG_ENABLE([eep],
     [AC_SUBST(USE_EEP, no)]
 )
 
-AS_IF([test "x$USE_EEP" == "xyes"], [
+AS_IF([test "x$USE_EEP" = "xyes"], [
 	AC_DEFINE([USE_EEP],[],[Compile With EEP support])
 ], [])
 
+####
+#### zlib Support
+####
+AC_ARG_WITH([zlib],
+    AS_HELP_STRING([--with-zlib], [Enable zlib to support gzip compressed pcap files]),
+    [AC_SUBST(WITH_ZLIB, $withval)],
+    [AC_SUBST(WITH_ZLIB, no)]
+)
 
-# Conditional Source inclusion 
-AM_CONDITIONAL([WITH_GNUTLS], [test "x$WITH_GNUTLS" == "xyes"])
-AM_CONDITIONAL([WITH_OPENSSL], [test "x$WITH_OPENSSL" == "xyes"])
-AM_CONDITIONAL([USE_EEP], [test "x$USE_EEP" == "xyes"])
+AS_IF([test "x$WITH_ZLIB" = "xyes"], [
+	AC_CHECK_HEADER([zlib.h], [], [
+	    AC_MSG_ERROR([ You need libz header files installed to compile with zlib support.])
+	])
+	AC_CHECK_LIB([z], [gzdopen], [], [
+	    AC_MSG_ERROR([ You need libz library installed to compile with zlib support.])
+	])
+	AC_DEFINE([WITH_ZLIB],[],[Compile With zlib support])
+], [])
+
+
+
+# Conditional Source inclusion
+AM_CONDITIONAL([WITH_PCRE2], [test "x$WITH_PCRE2" = "xyes"])
+AM_CONDITIONAL([WITH_GNUTLS], [test "x$WITH_GNUTLS" = "xyes"])
+AM_CONDITIONAL([WITH_OPENSSL], [test "x$WITH_OPENSSL" = "xyes"])
+AM_CONDITIONAL([USE_EEP], [test "x$USE_EEP" = "xyes"])
+AM_CONDITIONAL([WITH_ZLIB], [test "x$WITH_ZLIB" = "xyes"])
 
 
 ######################################################################
@@ -233,7 +294,7 @@ AC_ARG_ENABLE(logo,
     [ enable_logo=$enableval],
     [ enable_logo=yes])
 
-AS_IF([test "x$enable_logo" == "xyes"], [
+AS_IF([test "x$enable_logo" = "xyes"], [
     echo ''
     echo ' ██╗██████╗  ██████╗ ███╗   ██╗████████╗███████╗ ██████╗'
     echo ' ██║██╔══██╗██╔═══██╗████╗  ██║╚══██╔══╝██╔════╝██╔════╝'
@@ -251,8 +312,10 @@ AC_MSG_NOTICE( GnuTLS Support               : ${WITH_GNUTLS}		)
 AC_MSG_NOTICE( OpenSSL Support              : ${WITH_OPENSSL} 			)
 AC_MSG_NOTICE( Unicode Support              : ${UNICODE}  		)
 AC_MSG_NOTICE( Perl Expressions Support     : ${WITH_PCRE}              )
+AC_MSG_NOTICE( Perl Expressions Support (v2): ${WITH_PCRE2}             )
 AC_MSG_NOTICE( IPv6 Support                 : ${USE_IPV6}               )
 AC_MSG_NOTICE( EEP Support                  : ${USE_EEP}               )
+AC_MSG_NOTICE( Zlib Support                 : ${WITH_ZLIB}               )
 AC_MSG_NOTICE( ====================================================== 	)
 AC_MSG_NOTICE
 

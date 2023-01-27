@@ -109,7 +109,7 @@ int
 read_options(const char *fname)
 {
     FILE *fh;
-    char line[1024], type[20], option[50], value[50];
+    char line[1024], type[20], option[50], value[500];
     int id;
 
     if (!(fh = fopen(fname, "rt")))
@@ -121,7 +121,7 @@ read_options(const char *fname)
             continue;
 
         // Get configuration option from setting line
-        if (sscanf(line, "%s %s %[^\t\n]", type, option, value) == 3) {
+        if (sscanf(line, "%19s %49s %499[^\t\n]", type, option, value) == 3) {
             if (!strcasecmp(type, "set")) {
                 if ((id = setting_id(option)) >= 0) {
                     setting_set_value(id, value);
@@ -192,6 +192,28 @@ set_alias_value(const char *address, const char *alias)
     options[optscnt].opt = strdup(address);
     options[optscnt].value = strdup(alias);
     optscnt++;
+}
+
+const char *
+get_alias_value_vs_port(const char *address, uint16_t port)
+{
+    if (!address)
+        return NULL;
+
+    int i;
+
+    char *addr_port = sng_malloc(ADDRESSLEN + 10);
+    sprintf(addr_port, "%s:%d", address, port);
+    for (i = 0; i < optscnt; i++) {
+        if (options[i].type != ALIAS)
+            continue;
+        if (!strcmp(options[i].opt, addr_port) || !strcmp(options[i].opt, address)) {
+            sng_free(addr_port);
+            return options[i].value;
+        }
+    }
+
+    return address;
 }
 
 const char *

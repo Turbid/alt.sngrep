@@ -108,8 +108,10 @@ msg_get_time(sip_msg_t *msg) {
     struct timeval t = { };
     frame_t *frame;
 
-    if (msg && (frame = vector_first(msg->packet->frames)))
-        return frame->header->ts;
+    if (msg && (frame = vector_first(msg->packet->frames))) {
+        t.tv_sec = frame->header->ts.tv_sec;
+        t.tv_usec = frame->header->ts.tv_usec;
+    }
     return t;
 }
 
@@ -120,10 +122,18 @@ msg_get_attribute(sip_msg_t *msg, int id, char *value)
 
     switch (id) {
         case SIP_ATTR_SRC:
-            sprintf(value, "%s:%u", msg->packet->src.ip, msg->packet->src.port);
+            if (msg->packet->ip_version == 6) {
+                sprintf(value, "[%s]:%u", msg->packet->src.ip, msg->packet->src.port);
+            } else {
+                sprintf(value, "%s:%u", msg->packet->src.ip, msg->packet->src.port);
+            }
             break;
         case SIP_ATTR_DST:
-            sprintf(value, "%s:%u", msg->packet->dst.ip, msg->packet->dst.port);
+            if (msg->packet->ip_version == 6) {
+                sprintf(value, "[%s]:%u", msg->packet->dst.ip, msg->packet->dst.port);
+            } else {
+                sprintf(value, "%s:%u", msg->packet->dst.ip, msg->packet->dst.port);
+            }
             break;
         case SIP_ATTR_METHOD:
             sprintf(value, "%.*s", SIP_ATTR_MAXLEN, sip_get_msg_reqresp_str(msg));
@@ -135,13 +145,15 @@ msg_get_attribute(sip_msg_t *msg, int id, char *value)
             sprintf(value, "%.*s", SIP_ATTR_MAXLEN, msg->sip_to);
             break;
         case SIP_ATTR_SIPFROMUSER:
-            if ((ar = strchr(msg->sip_from, '@'))) {
+            if (msg->sip_from && (ar = strchr(msg->sip_from, '@'))) {
                 strncpy(value, msg->sip_from, ar - msg->sip_from);
+                value[ar - msg->sip_from] = '\0';
             }
             break;
         case SIP_ATTR_SIPTOUSER:
-            if ((ar = strchr(msg->sip_to, '@'))) {
+            if (msg->sip_to && (ar = strchr(msg->sip_to, '@'))) {
                 strncpy(value, msg->sip_to, ar - msg->sip_to);
+                value[ar - msg->sip_to] = '\0';
             }
             break;
         case SIP_ATTR_DATE:

@@ -53,7 +53,7 @@
 capture_eep_config_t eep_cfg = { 0 };
 
 void *
-accept_eep_client(void *data);
+accept_eep_client(void *info);
 
 int
 capture_eep_init()
@@ -125,12 +125,36 @@ capture_eep_init()
             return 1;
         }
 
-        // Create a new thread for accepting client connections
-        if (pthread_create(&eep_cfg.server_thread, NULL, accept_eep_client, NULL) != 0) {
-            fprintf(stderr, "Error creating accept thread: %s\n", strerror(errno));
+        capture_info_t *capinfo;
+
+        // Create a new structure to handle this capture source
+        if (!(capinfo = sng_malloc(sizeof(capture_info_t)))) {
+            fprintf(stderr, "Can't allocate memory for capture data!\n");
             return 1;
         }
 
+        // Set capture thread function
+        capinfo->capture_fn = accept_eep_client;
+        capinfo->ispcap = false;
+
+        // Open capture device
+        capinfo->handle = pcap_open_dead(DLT_EN10MB, MAXIMUM_SNAPLEN);
+
+        // Get datalink to parse packets correctly
+        capinfo->link = pcap_datalink(capinfo->handle);
+
+        // Check linktypes sngrep knowns before start parsing packets
+        if ((capinfo->link_hl = datalink_size(capinfo->link)) == -1) {
+            fprintf(stderr, "Unable to handle linktype %d\n", capinfo->link);
+            return 3;
+        }
+
+        // Create Vectors for IP and TCP reassembly
+        capinfo->tcp_reasm = vector_create(0, 10);
+        capinfo->ip_reasm = vector_create(0, 10);
+
+        // Add this capture information as packet source
+        capture_add_source(capinfo);
     }
 
     // Settings for EEP server
@@ -139,9 +163,10 @@ capture_eep_init()
 
 
 void *
-accept_eep_client(void *data)
+accept_eep_client(void *info)
 {
     packet_t *pkt;
+    capture_info_t *capinfo = (capture_info_t *) info;
 
     // Begin accepting connections
     while (eep_cfg.server_sock > 0) {
@@ -155,6 +180,9 @@ accept_eep_client(void *data)
             capture_unlock();
         }
     }
+
+    // Mark capture as not longer running
+    capinfo->running = false;
 
     // Leave the thread gracefully
     pthread_exit(NULL);
@@ -170,7 +198,6 @@ capture_eep_deinit()
     if (eep_cfg.server_sock) {
         close(eep_cfg.server_sock);
         eep_cfg.server_sock = -1;
-        //pthread_join(&eep_cfg.server_thread, &ret);
     }
 }
 
@@ -204,6 +231,65 @@ capture_eep_send(packet_t *pkt)
             return capture_eep_send_v3(pkt);
     }
     return 1;
+}
+
+struct pcap_pkthdr
+capture_eep_build_frame_data(
+        const struct pcap_pkthdr header,
+        const unsigned char *payload,
+        const uint32_t payload_size,
+        const address_t src,
+        const address_t dst,
+        unsigned char **frame_payload
+) {
+    //! Frame variables
+    struct pcap_pkthdr frame_pcap_header;
+    uint32_t frame_size = 0;
+
+    // Build frame ethernet header
+    struct ether_header ether_hdr = {
+        .ether_dhost = { 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB },
+        .ether_shost = { 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA },
+        .ether_type = htons(ETHERTYPE_IP),
+    };
+
+    // Build frame IP header
+    struct ip ip_hdr = {
+        .ip_v = 4,
+        .ip_p = IPPROTO_UDP,
+        .ip_hl = sizeof(ip_hdr) / 4,
+        .ip_len = htons(sizeof(ip_hdr) + sizeof(struct udphdr) + payload_size),
+        .ip_ttl = 128,
+    };
+    inet_pton(AF_INET, src.ip, &ip_hdr.ip_src);
+    inet_pton(AF_INET, dst.ip, &ip_hdr.ip_dst);
+
+    // Build frame UDP header
+    struct udphdr udp_hdr = {
+        .uh_sport = htons(src.port),
+        .uh_dport = htons(dst.port),
+        .uh_ulen = htons(sizeof(struct udphdr) + payload_size),
+    };
+
+    // Allocate memory for payload contents
+    *frame_payload = sng_malloc(sizeof(ether_hdr) + sizeof(ip_hdr) + sizeof(udp_hdr) + payload_size);
+
+    // Append all headers to frame contents
+    memcpy(*frame_payload + frame_size, (void*) &ether_hdr, sizeof(ether_hdr));
+    frame_size += sizeof(ether_hdr);
+    memcpy(*frame_payload + frame_size, (void*) &ip_hdr, sizeof(ip_hdr));
+    frame_size += sizeof(ip_hdr);
+    memcpy(*frame_payload + frame_size, (void*) &udp_hdr, sizeof(udp_hdr));
+    frame_size += sizeof(udp_hdr);
+    memcpy(*frame_payload + frame_size, (void*) payload, payload_size);
+    frame_size += payload_size;
+
+    // Build a custom frame pcap header
+    frame_pcap_header.caplen = frame_size;
+    frame_pcap_header.len = frame_size;
+    frame_pcap_header.ts = header.ts;
+
+    return frame_pcap_header;
 }
 
 int
@@ -488,7 +574,7 @@ capture_eep_receive()
         case 2:
             return capture_eep_receive_v2();
         case 3:
-            return capture_eep_receive_v3();
+            return capture_eep_receive_v3(NULL, 0);
     }
     return NULL;
 }
@@ -509,11 +595,14 @@ capture_eep_receive_v2()
     //! New created packet pointer
     packet_t *pkt;
     //! EEP client data
-    struct sockaddr eep_client;
-    socklen_t eep_client_len;
+    struct sockaddr_storage eep_client;
+    socklen_t eep_client_len=sizeof(eep_client);
     struct hep_hdr hdr;
     struct hep_timehdr hep_time;
     struct hep_iphdr hep_ipheader;
+    //! Frame contents
+    struct pcap_pkthdr frame_pcap_header;
+    unsigned char *frame_payload;
 #ifdef USE_IPV6
     struct hep_ip6hdr hep_ip6header;
 #endif
@@ -522,7 +611,7 @@ capture_eep_receive_v2()
     memset(buffer, 0, MAX_CAPTURE_LEN);
 
     /* Receive EEP generic header */
-    if (recvfrom(eep_cfg.server_sock, buffer, MAX_CAPTURE_LEN, 0, &eep_client, &eep_client_len) == -1)
+    if (recvfrom(eep_cfg.server_sock, buffer, MAX_CAPTURE_LEN, 0, (struct sockaddr*)&eep_client, &eep_client_len) == -1)
         return NULL;
 
     /* Copy initial bytes to HEPv2 header */
@@ -576,12 +665,21 @@ capture_eep_receive_v2()
     payload = sng_malloc(header.caplen + 1);
     memcpy(payload, (void*) buffer + pos, header.caplen);
 
+    // Build a custom frame pcap header
+    frame_pcap_header = capture_eep_build_frame_data(header, payload,header.caplen, src, dst, &frame_payload);
+
     // Create a new packet
     pkt = packet_create((family == AF_INET) ? 4 : 6, proto, src, dst, 0);
-    packet_add_frame(pkt, &header, payload);
+    packet_add_frame(pkt, &frame_pcap_header, frame_payload);
     packet_set_transport_data(pkt, src.port, dst.port);
     packet_set_type(pkt, PACKET_SIP_UDP);
     packet_set_payload(pkt, payload, header.caplen);
+
+    // We don't longer require frame payload anymore, because adding the frame to packet clones its memory
+    sng_free(frame_payload);
+
+    // Store this packets in output file
+    capture_dump_packet(pkt);
 
     /* FREE */
     sng_free(payload);
@@ -600,7 +698,7 @@ capture_eep_receive_v2()
  * @return packet pointer
  */
 packet_t *
-capture_eep_receive_v3()
+capture_eep_receive_v3(const u_char *pkt, uint32_t size)
 {
 
     struct hep_generic hg;
@@ -610,7 +708,6 @@ capture_eep_receive_v3()
 #endif
     hep_chunk_t payload_chunk;
     hep_chunk_t authkey_chunk;
-    hep_chunk_t uuid_chunk;
     char password[100];
     int password_len;
     unsigned char *payload = 0;
@@ -619,16 +716,23 @@ capture_eep_receive_v3()
     //! Source and Destination Address
     address_t src, dst;
     //! EEP client data
-    struct sockaddr eep_client;
-    socklen_t eep_client_len;
+    struct sockaddr_storage eep_client;
+    socklen_t eep_client_len=sizeof(eep_client);
     //! Packet header
     struct pcap_pkthdr header;
     //! New created packet pointer
-    packet_t *pkt;
+    packet_t *pkt_new;
+    //! Frame contents
+    struct pcap_pkthdr frame_pcap_header;
+    unsigned char *frame_payload;
 
-    /* Receive EEP generic header */
-    if (recvfrom(eep_cfg.server_sock, buffer, MAX_CAPTURE_LEN, 0, &eep_client, &eep_client_len) == -1)
-        return NULL;
+    if(!pkt) {
+        /* Receive EEP generic header */
+        if (recvfrom(eep_cfg.server_sock, buffer, MAX_CAPTURE_LEN, 0, (struct sockaddr*)&eep_client, &eep_client_len) == -1)
+            return NULL;
+    } else {
+        memcpy(&buffer, pkt, size);
+    }
 
     // Initialize structs
     memset(&hg, 0, sizeof(hep_generic_t));
@@ -747,28 +851,37 @@ capture_eep_receive_v3()
             return NULL;
     }
 
+    // Build a custom frame pcap header
+    frame_pcap_header = capture_eep_build_frame_data(header, payload,header.caplen, src, dst, &frame_payload);
+
     // Create a new packet
-    pkt = packet_create((hg.ip_family.data == AF_INET)?4:6, hg.ip_proto.data, src, dst, 0);
-    packet_add_frame(pkt, &header, payload);
-    packet_set_type(pkt, PACKET_SIP_UDP);
-    packet_set_payload(pkt, payload, header.caplen);
+    pkt_new = packet_create((hg.ip_family.data == AF_INET)?4:6, hg.ip_proto.data, src, dst, 0);
+    packet_add_frame(pkt_new, &frame_pcap_header, frame_payload);
+    packet_set_type(pkt_new, PACKET_SIP_UDP);
+    packet_set_payload(pkt_new, payload, header.caplen);
+
+    // We don't longer require frame payload anymore, because adding the frame to packet clones its memory
+    sng_free(frame_payload);
+
+    // Store this packets in output file
+    capture_dump_packet(pkt_new);
 
     /* FREE */
     sng_free(payload);
-    return pkt;
+    return pkt_new;
 }
 
 int
 capture_eep_set_server_url(const char *url)
 {
     char urlstr[256];
-    char address[256], port[256];
+    char address[ADDRESSLEN + 1], port[6];
 
     memset(address, 0, sizeof(address));
     memset(port, 0, sizeof(port));
 
     strncpy(urlstr, url, sizeof(urlstr));
-    if (sscanf(urlstr, "%*[^:]:%[^:]:%s", address, port) == 2) {
+    if (sscanf(urlstr, "%*[^:]:%" STRINGIFY(ADDRESSLEN) "[^:]:%5s", address, port) == 2) {
         setting_set_value(SETTING_EEP_LISTEN, SETTING_ON);
         setting_set_value(SETTING_EEP_LISTEN_ADDR, address);
         setting_set_value(SETTING_EEP_LISTEN_PORT, port);
@@ -781,13 +894,13 @@ int
 capture_eep_set_client_url(const char *url)
 {
     char urlstr[256];
-    char address[256], port[256];
+    char address[ADDRESSLEN + 1], port[6];
 
     memset(address, 0, sizeof(address));
     memset(port, 0, sizeof(port));
 
     strncpy(urlstr, url, sizeof(urlstr));
-    if (sscanf(urlstr, "%*[^:]:%[^:]:%s", address, port) == 2) {
+    if (sscanf(urlstr, "%*[^:]:%" STRINGIFY(ADDRESSLEN) "[^:]:%5s", address, port) == 2) {
         setting_set_value(SETTING_EEP_SEND, SETTING_ON);
         setting_set_value(SETTING_EEP_SEND_ADDR, address);
         setting_set_value(SETTING_EEP_SEND_PORT, port);

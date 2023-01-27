@@ -35,6 +35,9 @@
 // Max Memmory allocation
 #define MALLOC_MAX_SIZE 102400
 
+// Stringify numbers for concatenation
+#define STRINGIFY_ARG(x)    #x
+#define STRINGIFY(x)        STRINGIFY_ARG(x)
 
 /**
  * @brief Wrapper for memory allocation
@@ -95,5 +98,17 @@ timeval_to_delta(struct timeval start, struct timeval end, char *out);
  */
 char *
 strtrim(char *str);
+
+/**
+ * @brief Set up handler for SIGTERM, SIGINT and SIGQUIT
+ */
+void setup_sigterm_handler(void);
+
+/**
+ * @brief Check if SIGTERM, SIGINT or SIGQUIT were received
+ *
+ * @return true if any of the exit signals were received
+ */
+bool was_sigterm_received(void);
 
 #endif /* __SNGREP_UTIL_H */

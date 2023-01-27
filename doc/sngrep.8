@@ -1,9 +1,9 @@
 .\" Man page for the sngrep
 .\"
-.\" Copyright (c) 2013-2019  Ivan Alonso <kaian@irontec.com>
-.\" Copyright (c) 2013-2019  Irontec S.L.
+.\" Copyright (c) 2013-2021  Ivan Alonso <kaian@irontec.com>
+.\" Copyright (c) 2013-2021  Irontec S.L.
 
-.TH SNGREP 8 "May 2020" "sngrep 1.4.7"
+.TH SNGREP 8 "May 2021" "sngrep 1.6.0"
 
 .SH NAME
 
@@ -11,7 +11,7 @@ sngrep \- SIP Messages flow viewer
 
 .SH SYNOPSIS
 
-.B sngrep [-hVcivlkNq] [ -IO
+.B sngrep [-hVcivlkNqE] [ -IO
 .I pcap_dump
 .B ] [ -d
 .I dev
@@ -111,6 +111,10 @@ Argument must be an IP address and port in the format: udp:A.B.C.D:PORT
 .I -L
 Start a HEP server listening for packets
 Argument must be an IP address and port in the format: udp:A.B.C.D:PORT
+
+.TP
+.I -E
+Enable parsing of captured HEP3 packets.
 
 .TP
 .I match expression

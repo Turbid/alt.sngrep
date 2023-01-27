@@ -48,15 +48,6 @@
 #define _BSD_SOURCE 1
 #endif
 
-/* Old versions of libpcap in OpenBSD use <net/bpf.h>
- * which actually defines timestamps as bpf_timeval instead
- * of simple timeval. This no longer happens in newest libpcap
- * versions, where header packets have timestamps in timeval
- * structs */
-#if defined (__OpenBSD__) && defined(_NET_BPF_H_)
-#define timeval bpf_timeval
-#endif
-
 #if defined(BSD) || defined (__OpenBSD__) || defined(__FreeBSD__)
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -148,6 +139,10 @@ struct capture_config {
     struct bpf_program fp;
     //! libpcap dump file handler
     pcap_dumper_t *pd;
+    //! libpcap dump file name
+    const char *dumpfilename;
+    //! inode of the dump file we have open
+    ino_t dump_inode;
     //! Capture sources
     vector_t *sources;
     //! Capture Lock. Avoid parsing and handling data at the same time
@@ -163,6 +158,8 @@ struct capture_info
 {
     //! Flag to determine if capture is running
     bool running;
+    //! Flag to determine if this capture is libpcap
+    bool ispcap;
     //! libpcap link type
     int link;
     //! libpcap link header size
@@ -181,6 +178,8 @@ struct capture_info
     vector_t *ip_reasm;
     //! Packets pending TCP reassembly
     vector_t *tcp_reasm;
+    //! Capture thread function
+    void *(*capture_fn)(void *data);
     //! Capture thread for online capturing
     pthread_t capture_t;
 };
@@ -206,12 +205,11 @@ capture_deinit();
  * @brief Online capture function
  *
  * @param device Device to start capture from
- * @param outfile Dumpfile for captured packets
  *
  * @return 0 on spawn success, 1 otherwise
  */
 int
-capture_online(const char *dev, const char *outfile);
+capture_online(const char *dev);
 
 /**
  * @brief Read from pcap file and fill sngrep sctuctures
@@ -224,7 +222,7 @@ capture_online(const char *dev, const char *outfile);
  * @return 0 if load has been successfull, 1 otherwise
  */
 int
-capture_offline(const char *infile, const char *outfile);
+capture_offline(const char *infile);
 
 /**
  * @brief Read the next package and parse SIP messages
@@ -323,7 +321,7 @@ capture_launch_thread();
  * This function is used as worker thread for capturing filtered packets and
  * pass them to the UI layer.
  */
-void
+void *
 capture_thread(void *none);
 
 /**
@@ -429,6 +427,12 @@ address_t
 capture_tls_server();
 
 /**
+ * @brief Add new source to capture list
+ */
+void
+capture_add_source(struct capture_info *capinfo);
+
+/**
  * @brief Return packet catprue sources count
  * @return capture sources count
  */
@@ -466,6 +470,18 @@ void
 capture_close();
 
 /**
+ * @brief Set general capture dumper
+ */
+void
+capture_set_dumper(pcap_dumper_t *dumper, ino_t dump_inode);
+
+/**
+ * @brief Store a packet in dumper file
+ */
+void
+capture_dump_packet(packet_t *packet);
+
+/**
  * @brief Get datalink header size
  *
  */
@@ -476,7 +492,7 @@ datalink_size(int datalink);
  * @brief Open a new dumper file for capture handler
  */
 pcap_dumper_t *
-dump_open(const char *dumpfile);
+dump_open(const char *dumpfile, ino_t* dump_inode);
 
 /**
  * @brief Store a packet in dump file

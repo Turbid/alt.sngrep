@@ -93,7 +93,7 @@ ncurses_init()
     // Hide the cursor
     curs_set(0);
     // Only delay ESC Sequences 25 ms (we dont want Escape sequences)
-    ESCDELAY = 25;
+    set_escdelay(25);
 
     // Redefine some keys
     term = getenv("TERM");
@@ -191,6 +191,9 @@ ui_wait_for_input()
 
     // While there are still panels
     while ((panel = panel_below(NULL))) {
+
+        if (was_sigterm_received())
+            return 0;
 
         // Get panel interface structure
         ui = ui_find_by_panel(panel);
@@ -445,11 +448,14 @@ draw_message_pos(WINDOW *win, sip_msg_t *msg, int starting)
             cur_line =payload + i + 1;
 
         // Move to the next line if line is filled or a we reach a line break
-        if (column > width || payload[i] == '\n') {
+        if (column > width - 1 || payload[i] == '\n') {
             line++;
             column = 0;
-            continue;
         }
+
+        // No need to print new line characters
+        if (payload[i] == '\n')
+            continue;
 
         // Put next character in position
         if (isascii(payload[i])) {
@@ -665,7 +671,7 @@ dialog_confirm(const char *title, const char *text, const char *options)
     curs = curs_set(0);
 
     // Set the window title
-    mvwprintw(dialog_win, 1, (width - strlen(title)) / 2, title);
+    mvwprintw(dialog_win, 1, (width - strlen(title)) / 2, "%s", title);
 
     // Write border and boxes around the window
     wattron(dialog_win, COLOR_PAIR(CP_BLUE_ON_DEF));

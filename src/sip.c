@@ -149,6 +149,7 @@ sip_init(int limit, int only_calls, int no_incomplete)
     calls.only_calls = only_calls;
     calls.ignore_incomplete = no_incomplete;
     calls.last_index = 0;
+    calls.call_count_unrotated = 0;
 
     // Create a vector to store calls
     calls.list = vector_create(200, 50);
@@ -171,7 +172,7 @@ sip_init(int limit, int only_calls, int no_incomplete)
 
     // Initialize payload parsing regexp
     match_flags = REG_EXTENDED | REG_ICASE | REG_NEWLINE;
-    regcomp(&calls.reg_method, "^([a-zA-Z]+) [a-zA-Z]+:.+ SIP/2.0[ ]*\r", match_flags & ~REG_NEWLINE);
+    regcomp(&calls.reg_method, "^([a-zA-Z]+) [a-zA-Z]+:.* SIP/2.0[ ]*\r", match_flags & ~REG_NEWLINE);
     regcomp(&calls.reg_callid, "^(Call-ID|i):[ ]*([^ ]+)[ ]*\r$", match_flags);
     setting = setting_get_value(SETTING_SIP_HEADER_X_CID);
     reg_rule_len = strlen(setting) + 22;
@@ -262,7 +263,7 @@ sip_validate_packet(packet_t *packet)
 {
     uint32_t plen = packet_payloadlen(packet);
     u_char payload[MAX_SIP_PAYLOAD];
-    regmatch_t pmatch[3];
+    regmatch_t pmatch[4];
     char cl_header[10];
     int content_len;
     int bodylen;
@@ -328,17 +329,12 @@ sip_check_packet(packet_t *packet)
     sip_msg_t *msg;
     sip_call_t *call;
     char callid[1024], xcallid[1024];
-    address_t src, dst;
     u_char payload[MAX_SIP_PAYLOAD];
     bool newcall = false;
 
     // Max SIP payload allowed
     if (packet->payload_len > MAX_SIP_PAYLOAD)
         return NULL;
-
-    // Get Addresses from packet
-    src = packet->src;
-    dst = packet->dst;
 
     // Initialize local variables
     memset(callid, 0, sizeof(callid));
@@ -443,6 +439,7 @@ sip_check_packet(packet_t *packet)
     if (newcall) {
         // Append this call to the call list
         vector_append(calls.list, call);
+        ++calls.call_count_unrotated;
     }
 
     // Mark the list as changed
@@ -470,6 +467,12 @@ int
 sip_calls_count()
 {
     return vector_count(calls.list);
+}
+
+int
+sip_calls_count_unrotated()
+{
+    return calls.call_count_unrotated;
 }
 
 vector_iter_t
@@ -548,7 +551,7 @@ sip_get_msg_reqresp(sip_msg_t *msg, const u_char *payload)
         // Method & CSeq
         if (regexec(&calls.reg_method, (const char *)payload, 2, pmatch, 0) == 0) {
             if ((int)(pmatch[1].rm_eo - pmatch[1].rm_so) >= SIP_ATTR_MAXLEN) {
-                strncpy(reqresp, "<malformed>", 11);
+                strncpy(reqresp, "<malformed>", 12);
             } else {
                 sprintf(reqresp, "%.*s", (int) (pmatch[1].rm_eo - pmatch[1].rm_so), payload + pmatch[1].rm_so);
             }
@@ -564,12 +567,12 @@ sip_get_msg_reqresp(sip_msg_t *msg, const u_char *payload)
         // Response code
         if (regexec(&calls.reg_response, (const char *)payload, 3, pmatch, 0) == 0) {
             if ((int)(pmatch[1].rm_eo - pmatch[1].rm_so) >= SIP_ATTR_MAXLEN) {
-                strncpy(resp_str, "<malformed>", 11);
+                strncpy(resp_str, "<malformed>", 12);
             } else {
                 sprintf(resp_str, "%.*s", (int) (pmatch[1].rm_eo - pmatch[1].rm_so), payload + pmatch[1].rm_so);
             }
             if ((int)(pmatch[2].rm_eo - pmatch[2].rm_so) >= SIP_ATTR_MAXLEN) {
-                strncpy(resp_str, "<malformed>", 11);
+                strncpy(resp_str, "<malformed>", 12);
             } else {
                 sprintf(reqresp, "%.*s", (int) (pmatch[2].rm_eo - pmatch[2].rm_so), payload + pmatch[2].rm_so);
             }
@@ -622,7 +625,7 @@ sip_parse_msg_payload(sip_msg_t *msg, const u_char *payload)
     } else {
         // Malformed From Header
         msg->sip_from = sng_malloc(12);
-        strncpy(msg->sip_from, "<malformed>", 11);
+        strncpy(msg->sip_from, "<malformed>", 12);
     }
 
     // To
@@ -632,7 +635,7 @@ sip_parse_msg_payload(sip_msg_t *msg, const u_char *payload)
     } else {
         // Malformed To Header
         msg->sip_to = sng_malloc(12);
-        strncpy(msg->sip_to, "<malformed>", 11);
+        strncpy(msg->sip_to, "<malformed>", 12);
     }
 
     return 0;
@@ -654,8 +657,9 @@ sip_parse_msg_media(sip_msg_t *msg, const u_char *payload)
 
     address_t dst, src = { };
     rtp_stream_t *rtp_stream = NULL, *rtcp_stream = NULL, *msg_rtp_stream = NULL;
-    char media_type[MEDIATYPELEN] = { };
+    char media_type[MEDIATYPELEN + 1] = { };
     char media_format[30] = { };
+    char address[ADDRESSLEN + 1] = { };
     uint32_t media_fmt_pref;
     uint32_t media_fmt_code;
     sdp_media_t *media = NULL;
@@ -674,8 +678,8 @@ sip_parse_msg_media(sip_msg_t *msg, const u_char *payload)
     while ((line = strsep(&payload2, "\r\n")) != NULL) {
         // Check if we have a media string
         if (!strncmp(line, "m=", 2)) {
-            if (sscanf(line, "m=%s %hu RTP/%*s %u", media_type, &dst.port, &media_fmt_pref) == 3
-            ||  sscanf(line, "m=%s %hu UDP/%*s %u", media_type, &dst.port, &media_fmt_pref) == 3) {
+            if (sscanf(line, "m=%" STRINGIFY(MEDIATYPELEN) "s %hu RTP/%*s %u", media_type, &dst.port, &media_fmt_pref) == 3
+            ||  sscanf(line, "m=%" STRINGIFY(MEDIATYPELEN) "s %hu UDP/%*s %u", media_type, &dst.port, &media_fmt_pref) == 3) {
 
                 // Add streams from previous 'm=' line to the call
                 ADD_STREAM(msg_rtp_stream);
@@ -713,16 +717,19 @@ sip_parse_msg_media(sip_msg_t *msg, const u_char *payload)
 
         // Check if we have a connection string
         if (!strncmp(line, "c=", 2)) {
-            if (sscanf(line, "c=IN IP4 %s", dst.ip) && media) {
-                media_set_address(media, dst);
-                strcpy(rtp_stream->dst.ip, dst.ip);
-                strcpy(rtcp_stream->dst.ip, dst.ip);
+            if (sscanf(line, "c=IN IP%*c %" STRINGIFY(ADDRESSLEN) "s", address)) {
+                strncpy(dst.ip, address, ADDRESSLEN - 1);
+                if (media) {
+                    media_set_address(media, dst);
+                    strcpy(rtp_stream->dst.ip, dst.ip);
+                    strcpy(rtcp_stream->dst.ip, dst.ip);
+                }
             }
         }
 
         // Check if we have attribute format string
         if (!strncmp(line, "a=rtpmap:", 9)) {
-            if (media && sscanf(line, "a=rtpmap:%u %30[^ ]", &media_fmt_code, media_format)) {
+            if (media && sscanf(line, "a=rtpmap:%u %29[^ ]", &media_fmt_code, media_format)) {
                 media_add_format(media, media_fmt_code, media_format);
             }
         }
@@ -833,6 +840,17 @@ sip_set_match_expression(const char *expr, int insensitive, int invert)
     // Check if we have a valid expression
     calls.match_regex = pcre_compile(expr, pflags, &re_err, &err_offset, 0);
     return calls.match_regex == NULL;
+#elif defined(WITH_PCRE2)
+    int re_err = 0;
+    PCRE2_SIZE err_offset = 0;
+    uint32_t pflags = PCRE2_UNGREEDY | PCRE2_CASELESS;
+
+    if (insensitive)
+        pflags |= PCRE2_CASELESS;
+
+    // Check if we have a valid expression
+    calls.match_regex = pcre2_compile((PCRE2_SPTR) expr, PCRE2_ZERO_TERMINATED, pflags, &re_err, &err_offset, NULL);
+    return calls.match_regex == NULL;
 #else
     int cflags = REG_EXTENDED;
 
@@ -862,6 +880,16 @@ sip_check_match_expression(const char *payload)
     switch (pcre_exec(calls.match_regex, 0, payload, strlen(payload), 0, 0, 0, 0)) {
         case PCRE_ERROR_NOMATCH:
             return 1 == calls.match_invert;
+    }
+
+    return 0 == calls.match_invert;
+#elif defined(WITH_PCRE2)
+    pcre2_match_data *match_data = pcre2_match_data_create_from_pattern(calls.match_regex, NULL);
+    int ret = pcre2_match(calls.match_regex, (PCRE2_SPTR) payload, (PCRE2_SIZE) strlen(payload), 0, 0, match_data, NULL);
+    pcre2_match_data_free(match_data);
+
+    if (ret == PCRE2_ERROR_NOMATCH) {
+        return 1 == calls.match_invert;
     }
 
     return 0 == calls.match_invert;

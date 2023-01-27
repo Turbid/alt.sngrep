@@ -34,6 +34,8 @@
 #include <netdb.h>
 #include <string.h>
 #include <stdbool.h>
+#include <signal.h>
+#include <sys/stat.h>
 #include "capture.h"
 #ifdef USE_EEP
 #include "capture_eep.h"
@@ -44,14 +46,53 @@
 #ifdef WITH_OPENSSL
 #include "capture_openssl.h"
 #endif
+#ifdef WITH_ZLIB
+#include <zlib.h>
+#endif
 #include "sip.h"
 #include "rtp.h"
 #include "setting.h"
 #include "util.h"
 
+#if __STDC_VERSION__ >= 201112L && __STDC_NO_ATOMICS__ != 1
+// modern C with atomics
+#include <stdatomic.h>
+typedef atomic_int signal_flag_type;
+#else
+// no atomics available
+typedef volatile sig_atomic_t signal_flag_type;
+#endif
+
 // Capture information
 capture_config_t capture_cfg =
 { 0 };
+
+signal_flag_type sighup_received = 0;
+
+void sighup_handler(int signum)
+{
+    sighup_received = 1;
+}
+
+#if defined(WITH_ZLIB)
+static ssize_t
+gzip_cookie_write(void *cookie, const char *buf, size_t size)
+{
+    return gzwrite((gzFile)cookie, (voidpc)buf, size);
+}
+
+static ssize_t
+gzip_cookie_read(void *cookie, char *buf, size_t size)
+{
+    return gzread((gzFile)cookie, (voidp)buf, size);
+}
+
+static int
+gzip_cookie_close(void *cookie)
+{
+    return gzclose((gzFile)cookie);
+}
+#endif
 
 void
 capture_init(size_t limit, bool rtp_capture, bool rotate, size_t pcap_buffer_size)
@@ -62,6 +103,13 @@ capture_init(size_t limit, bool rtp_capture, bool rotate, size_t pcap_buffer_siz
     capture_cfg.rotate = rotate;
     capture_cfg.paused = 0;
     capture_cfg.sources = vector_create(1, 1);
+
+    // set up SIGHUP handler
+    // the handler will be served by any of the running threads
+    // so we just set a flag and check it in dump_packet
+    // so it is only acted upon before then next packed will be dumped
+    if (signal(SIGHUP, sighup_handler) == SIG_ERR)
+        exit(EXIT_FAILURE);
 
     // Fixme
     if (setting_has_value(SETTING_CAPTURE_STORAGE, "none")) {
@@ -104,7 +152,7 @@ capture_deinit()
 }
 
 int
-capture_online(const char *dev, const char *outfile)
+capture_online(const char *dev)
 {
     capture_info_t *capinfo;
 
@@ -155,9 +203,12 @@ capture_online(const char *dev, const char *outfile)
         return 2;
     }
 
+    // Set capture thread function
+    capinfo->capture_fn = capture_thread;
 
     // Store capture device
     capinfo->device = dev;
+    capinfo->ispcap = true;
 
     // Get datalink to parse packets correctly
     capinfo->link = pcap_datalink(capinfo->handle);
@@ -173,22 +224,13 @@ capture_online(const char *dev, const char *outfile)
     capinfo->ip_reasm = vector_create(0, 10);
 
     // Add this capture information as packet source
-    vector_append(capture_cfg.sources, capinfo);
-
-    // If requested store packets in a dump file
-    if (outfile && !capture_cfg.pd) {
-        if ((capture_cfg.pd = dump_open(outfile)) == NULL) {
-            fprintf(stderr, "Couldn't open output dump file %s: %s\n", outfile,
-                    pcap_geterr(capinfo->handle));
-            return 2;
-        }
-    }
+    capture_add_source(capinfo);
 
     return 0;
 }
 
 int
-capture_offline(const char *infile, const char *outfile)
+capture_offline(const char *infile)
 {
     capture_info_t *capinfo;
     FILE *fstdin;
@@ -207,14 +249,45 @@ capture_offline(const char *infile, const char *outfile)
         infile = "/dev/stdin";
     }
 
+    // Set capture thread function
+    capinfo->capture_fn = capture_thread;
+
     // Set capture input file
     capinfo->infile = infile;
+    capinfo->ispcap = true;
 
     // Open PCAP file
     if ((capinfo->handle = pcap_open_offline(infile, errbuf)) == NULL) {
+#if defined(HAVE_FOPENCOOKIE) && defined(WITH_ZLIB)
+        // we can't directly parse the file as pcap - could it be gzip compressed?
+        gzFile zf = gzopen(infile, "rb");
+        if (!zf)
+            goto openerror;
+
+        static cookie_io_functions_t cookiefuncs = {
+            gzip_cookie_read, NULL, NULL, gzip_cookie_close
+        };
+
+        // reroute the file access functions
+        // use the gzip read+close functions when accessing the file
+        FILE *fp = fopencookie(zf, "r", cookiefuncs);
+        if (!fp)
+        {
+            gzclose(zf);
+            goto openerror;
+        }
+
+        if ((capinfo->handle = pcap_fopen_offline(fp, errbuf)) == NULL) {
+openerror:
+            fprintf(stderr, "Couldn't open pcap file %s: %s\n", infile, errbuf);
+            return 1;
+        }
+    }
+#else
         fprintf(stderr, "Couldn't open pcap file %s: %s\n", infile, errbuf);
         return 1;
     }
+#endif
 
     // Reopen tty for ncurses after pcap have used stdin
     if (!strncmp(infile, "/dev/stdin", 10)) {
@@ -238,16 +311,7 @@ capture_offline(const char *infile, const char *outfile)
     capinfo->ip_reasm = vector_create(0, 10);
 
     // Add this capture information as packet source
-    vector_append(capture_cfg.sources, capinfo);
-
-    // If requested store packets in a dump file
-    if (outfile && !capture_cfg.pd) {
-        if ((capture_cfg.pd = dump_open(outfile)) == NULL) {
-            fprintf(stderr, "Couldn't open output dump file %s: %s\n", outfile,
-                    pcap_geterr(capinfo->handle));
-            return 2;
-        }
-    }
+    capture_add_source(capinfo);
 
     return 0;
 }
@@ -275,6 +339,10 @@ parse_packet(u_char *info, const struct pcap_pkthdr *header, const u_char *packe
     uint32_t size_payload =  size_capture - capinfo->link_hl;
     // Captured packet info
     packet_t *pkt;
+#ifdef USE_EEP
+    // Captured HEP3 packet info
+    packet_t *pkt_hep3;
+#endif
 
     // Ignore packets while capture is paused
     if (capture_paused())
@@ -318,10 +386,27 @@ parse_packet(u_char *info, const struct pcap_pkthdr *header, const u_char *packe
         // Remove TCP Header from payload
         payload = (u_char *) (udp) + udp_off;
 
-        // Complete packet with Transport information
-        packet_set_type(pkt, PACKET_SIP_UDP);
-        packet_set_payload(pkt, payload, size_payload);
+#ifdef USE_EEP
+        // check for HEP3 header and parse payload
+        if(setting_enabled(SETTING_CAPTURE_EEP)) {
+            pkt_hep3 = capture_eep_receive_v3(payload, size_payload);
 
+            if (pkt_hep3) {
+                packet_destroy(pkt);
+                pkt = pkt_hep3;
+            } else {
+                // Complete packet with Transport information
+                packet_set_type(pkt, PACKET_SIP_UDP);
+                packet_set_payload(pkt, payload, size_payload);
+            }
+        } else {
+#endif
+            // Complete packet with Transport information
+            packet_set_type(pkt, PACKET_SIP_UDP);
+            packet_set_payload(pkt, payload, size_payload);
+#ifdef USE_EEP
+        }
+#endif
     } else if (pkt->proto == IPPROTO_TCP) {
         // Get TCP header
         tcp = (struct tcphdr *)((u_char *)(data) + (size_capture - size_payload));
@@ -373,7 +458,7 @@ parse_packet(u_char *info, const struct pcap_pkthdr *header, const u_char *packe
         capture_eep_send(pkt);
 #endif
         // Store this packets in output file
-        dump_packet(capture_cfg.pd, pkt);
+        capture_dump_packet(pkt);;
         // If storage is disabled, delete frames payload
         if (capture_cfg.storage == 0) {
             packet_free_frames(pkt);
@@ -427,6 +512,9 @@ capture_packet_reasm_ip(capture_info_t *capinfo, const struct pcap_pkthdr *heade
     uint32_t len_data = 0;
     //! Link + Extra header size
     uint16_t link_hl = capinfo->link_hl;
+#ifdef USE_IPV6
+    struct ip6_frag *ip6f;
+#endif
 
     // Skip VLAN header if present
     if (capinfo->link == DLT_EN10MB) {
@@ -464,56 +552,69 @@ capture_packet_reasm_ip(capture_info_t *capinfo, const struct pcap_pkthdr *heade
         }
     }
 
-    // Get IP header
-    ip4 = (struct ip *) (packet + link_hl);
+    while (*size >= sizeof(struct ip)) {
+        // Get IP header
+        ip4 = (struct ip *) (packet + link_hl);
 
 #ifdef USE_IPV6
-    // Get IPv6 header
-    ip6 = (struct ip6_hdr *) (packet + link_hl);
+        // Get IPv6 header
+        ip6 = (struct ip6_hdr *) (packet + link_hl);
 #endif
 
-    // Get IP version
-    ip_ver = ip4->ip_v;
+        // Get IP version
+        ip_ver = ip4->ip_v;
 
-    switch (ip_ver) {
-        case 4:
-            ip_hl = ip4->ip_hl * 4;
-            ip_proto = ip4->ip_p;
-            ip_off = ntohs(ip4->ip_off);
-            ip_len = ntohs(ip4->ip_len);
+        switch (ip_ver) {
+            case 4:
+                ip_hl = ip4->ip_hl * 4;
+                ip_proto = ip4->ip_p;
+                ip_off = ntohs(ip4->ip_off);
+                ip_len = ntohs(ip4->ip_len);
 
-            ip_frag = ip_off & (IP_MF | IP_OFFMASK);
-            ip_frag_off = (ip_frag) ? (ip_off & IP_OFFMASK) * 8 : 0;
-            ip_id = ntohs(ip4->ip_id);
+                ip_frag = ip_off & (IP_MF | IP_OFFMASK);
+                ip_frag_off = (ip_frag) ? (ip_off & IP_OFFMASK) * 8 : 0;
+                ip_id = ntohs(ip4->ip_id);
 
-            inet_ntop(AF_INET, &ip4->ip_src, src.ip, sizeof(src.ip));
-            inet_ntop(AF_INET, &ip4->ip_dst, dst.ip, sizeof(dst.ip));
-            break;
+                inet_ntop(AF_INET, &ip4->ip_src, src.ip, sizeof(src.ip));
+                inet_ntop(AF_INET, &ip4->ip_dst, dst.ip, sizeof(dst.ip));
+                break;
 #ifdef USE_IPV6
-        case 6:
-            ip_hl = sizeof(struct ip6_hdr);
-            ip_proto = ip6->ip6_nxt;
-            ip_len = ntohs(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen) + ip_hl;
+            case 6:
+                ip_hl = sizeof(struct ip6_hdr);
+                ip_proto = ip6->ip6_nxt;
+                ip_len = ntohs(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen) + ip_hl;
 
-            if (ip_proto == IPPROTO_FRAGMENT) {
-                struct ip6_frag *ip6f = (struct ip6_frag *) (ip6 + ip_hl);
-                ip_frag_off = ntohs(ip6f->ip6f_offlg & IP6F_OFF_MASK);
-                ip_id = ntohl(ip6f->ip6f_ident);
-            }
+                if (ip_proto == IPPROTO_FRAGMENT) {
+                    ip_frag = 1;
+                    ip6f = (struct ip6_frag *) (packet + link_hl + ip_hl);
+                    ip_frag_off = ntohs(ip6f->ip6f_offlg & IP6F_OFF_MASK);
+                    ip_id = ntohl(ip6f->ip6f_ident);
+                }
 
-            inet_ntop(AF_INET6, &ip6->ip6_src, src.ip, sizeof(src.ip));
-            inet_ntop(AF_INET6, &ip6->ip6_dst, dst.ip, sizeof(dst.ip));
-            break;
+                inet_ntop(AF_INET6, &ip6->ip6_src, src.ip, sizeof(src.ip));
+                inet_ntop(AF_INET6, &ip6->ip6_dst, dst.ip, sizeof(dst.ip));
+                break;
 #endif
-        default:
-            return NULL;
+            default:
+                return NULL;
+        }
+
+        // Fixup VSS trailer in ethernet packets
+        *caplen = link_hl + ip_len;
+
+        // Remove IP Header length from payload
+        *size = *caplen - link_hl - ip_hl;
+
+        if (ip_proto == IPPROTO_IPIP) {
+            // The payload is an incapsulated IP packet (IP-IP tunnel)
+            // so we simply skip the "outer" IP header and repeat.
+            // NOTE: this will break IP reassembly if the "outer"
+            // packet is fragmented.
+            link_hl += ip_hl;
+        } else {
+            break;
+        }
     }
-
-    // Fixup VSS trailer in ethernet packets
-    *caplen = link_hl + ip_len;
-
-    // Remove IP Header length from payload
-    *size = *caplen - link_hl - ip_hl;
 
     // If no fragmentation
     if (ip_frag == 0) {
@@ -545,14 +646,25 @@ capture_packet_reasm_ip(capture_info_t *capinfo, const struct pcap_pkthdr *heade
 
     // Add this IP content length to the total captured of the packet
     pkt->ip_cap_len += ip_len - ip_hl;
+#ifdef USE_IPV6
+    if (ip_ver == 6 && ip_frag) {
+        pkt->ip_cap_len -= sizeof(struct ip6_frag);
+    }
+#endif
 
     // Calculate how much data we need to complete this packet
     // The total packet size can only be known using the last fragment of the packet
     // where 'No more fragments is enabled' and it's calculated based on the
     // last fragment offset
-    if ((ip_off & IP_MF) == 0) {
+    if (ip_ver == 4 && (ip_off & IP_MF) == 0) {
         pkt->ip_exp_len = ip_frag_off + ip_len - ip_hl;
     }
+#ifdef USE_IPV6
+    if (ip_ver == 6 && ip_frag && (ip6f->ip6f_offlg & htons(0x01)) == 0) {
+        pkt->ip_exp_len = ip_frag_off + ip_len - ip_hl - sizeof(struct ip6_frag);
+    }
+#endif
+
 
     // If we have the whole packet (captured length is expected length)
     if (pkt->ip_cap_len == pkt->ip_exp_len) {
@@ -560,8 +672,22 @@ capture_packet_reasm_ip(capture_info_t *capinfo, const struct pcap_pkthdr *heade
         // Calculate assembled IP payload data
         it = vector_iterator(pkt->frames);
         while ((frame = vector_iterator_next(&it))) {
-            struct ip *frame_ip = (struct ip *) (frame->data + link_hl);
-            len_data += ntohs(frame_ip->ip_len) - frame_ip->ip_hl * 4;
+            switch (ip_ver) {
+                case 4: {
+                    struct ip *frame_ip = (struct ip *) (frame->data + link_hl);
+                    len_data += ntohs(frame_ip->ip_len) - frame_ip->ip_hl * 4;
+                    break;
+                }
+#ifdef USE_IPV6
+                case 6: {
+                    struct ip6_hdr *frame_ip6 = (struct ip6_hdr *) (frame->data + link_hl);
+                    len_data += ntohs(frame_ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
+                    break;
+                }
+#endif
+                default:
+                    break;
+            }
         }
 
         // Check packet content length
@@ -573,14 +699,39 @@ capture_packet_reasm_ip(capture_info_t *capinfo, const struct pcap_pkthdr *heade
 
         it = vector_iterator(pkt->frames);
         while ((frame = vector_iterator_next(&it))) {
-            // Get IP header
-            struct ip *frame_ip = (struct ip *) (frame->data + link_hl);
-            memcpy(packet + link_hl + ip_hl + (ntohs(frame_ip->ip_off) & IP_OFFMASK) * 8,
-                   frame->data + link_hl + frame_ip->ip_hl * 4,
-                   ntohs(frame_ip->ip_len) - frame_ip->ip_hl * 4);
+            switch (ip_ver) {
+                case 4: {
+                    // Get IP header
+                    struct ip *frame_ip = (struct ip *) (frame->data + link_hl);
+                    memcpy(packet + link_hl + ip_hl + (ntohs(frame_ip->ip_off) & IP_OFFMASK) * 8,
+                           frame->data + link_hl + frame_ip->ip_hl * 4,
+                           ntohs(frame_ip->ip_len) - frame_ip->ip_hl * 4);
+
+                }
+                    break;
+#ifdef USE_IPV6
+                case 6: {
+                    struct ip6_hdr *frame_ip6 = (struct ip6_hdr*)(frame->data + link_hl);
+                    struct ip6_frag *frame_ip6f = (struct ip6_frag *)(frame->data + link_hl + ip_hl);
+                    uint16_t frame_ip_frag_off = ntohs(frame_ip6f->ip6f_offlg & IP6F_OFF_MASK);
+                    memcpy(packet + link_hl + ip_hl + sizeof(struct ip6_frag) + frame_ip_frag_off,
+                            frame->data + link_hl + ip_hl + sizeof (struct ip6_frag),
+                            ntohs(frame_ip6->ip6_ctlun.ip6_un1.ip6_un1_plen));
+                    pkt->proto = frame_ip6f->ip6f_nxt;
+                }
+                    break;
+#endif
+                default:
+                    break;
+            }
         }
 
         *caplen = link_hl + ip_hl + len_data;
+#ifdef USE_IPV6
+        if (ip_ver == 6) {
+            *caplen += sizeof(struct ip6_frag);
+        }
+#endif
         *size = len_data;
 
         // Return the assembled IP packet
@@ -657,6 +808,12 @@ capture_packet_reasm_tcp(capture_info_t *capinfo, packet_t *packet, struct tcphd
         sng_free(new_payload);
     }
 
+    // Check if packet is too large after assembly
+    if (pkt->payload_len > MAX_CAPTURE_LEN) {
+        vector_remove(capinfo->tcp_reasm, pkt);
+        return NULL;
+    }
+
     // Store full payload content
     memset(full_payload, 0, MAX_CAPTURE_LEN);
     memcpy(full_payload, pkt->payload, pkt->payload_len);
@@ -697,7 +854,6 @@ int
 capture_ws_check_packet(packet_t *packet)
 {
     int ws_off = 0;
-    u_char ws_fin;
     u_char ws_opcode;
     u_char ws_mask;
     uint8_t ws_len;
@@ -737,7 +893,6 @@ capture_ws_check_packet(packet_t *packet)
         return 0;
 
     // Flags && Opcode
-    ws_fin = (*payload & WH_FIN) >> 4;
     ws_opcode = *payload & WH_OPCODE;
     ws_off++;
 
@@ -846,7 +1001,9 @@ capture_close()
                  * you can only break pcap_loop from within the same thread.
                  * @see: https://www.tcpdump.org/manpages/pcap_breakloop.3pcap.html
                  */
-                pcap_breakloop(capinfo->handle);
+                if (capinfo->ispcap) {
+                    pcap_breakloop(capinfo->handle);
+                }
                 pthread_cancel(capinfo->capture_t);
                 pthread_join(capinfo->capture_t, NULL);
             }
@@ -867,7 +1024,7 @@ capture_launch_thread(capture_info_t *capinfo)
     while ((capinfo = vector_iterator_next(&it))) {
         // Mark capture as running
         capinfo->running = true;
-        if (pthread_create(&capinfo->capture_t, &attr, (void *) capture_thread, capinfo)) {
+        if (pthread_create(&capinfo->capture_t, &attr, (void *) capinfo->capture_fn, capinfo)) {
             return 1;
         }
     }
@@ -876,7 +1033,7 @@ capture_launch_thread(capture_info_t *capinfo)
     return 0;
 }
 
-void
+void *
 capture_thread(void *info)
 {
     capture_info_t *capinfo = (capture_info_t *) info;
@@ -884,6 +1041,8 @@ capture_thread(void *info)
     // Parse available packets
     pcap_loop(capinfo->handle, -1, parse_packet, (u_char *) capinfo);
     capinfo->running = false;
+
+    return NULL;
 }
 
 int
@@ -1055,6 +1214,12 @@ capture_tls_server()
     return capture_cfg.tlsserver;
 }
 
+void
+capture_add_source(struct capture_info *capinfo)
+{
+    vector_append(capture_cfg.sources, capinfo);
+}
+
 int
 capture_sources_count()
 {
@@ -1113,6 +1278,40 @@ capture_packet_time_sorter(vector_t *vector, void *item)
     vector_insert(vector, item, 0);
 }
 
+void
+capture_set_dumper(pcap_dumper_t *dumper, ino_t dump_inode)
+{
+    capture_cfg.pd = dumper;
+    capture_cfg.dump_inode = dump_inode;
+}
+
+void
+capture_dump_packet(packet_t *packet)
+{
+    if (sighup_received && capture_cfg.pd) {
+        // we got a SIGHUP: reopen the dump file because it could have been renamed
+        // we don't need to care about locking or other threads accessing in parallel
+        // because dump_open ensures count(capture_cfg.sources) == 1
+
+        // check if the file has actually changed
+        // only reopen if it has, otherwise we would overwrite the existing one
+        struct stat sb;
+        if (stat(capture_cfg.dumpfilename, &sb) == -1 ||
+            sb.st_ino != capture_cfg.dump_inode)
+        {
+            pcap_dump_close(capture_cfg.pd);
+            capture_cfg.pd = dump_open(capture_cfg.dumpfilename, &capture_cfg.dump_inode);
+        }
+
+        sighup_received = 0;
+
+        // error reopening capture file: we can't capture anymore
+        if (!capture_cfg.pd)
+            return;
+    }
+
+    dump_packet(capture_cfg.pd, packet);
+}
 
 int8_t
 datalink_size(int datalink)
@@ -1146,6 +1345,10 @@ datalink_size(int datalink)
         case DLT_LINUX_SLL:
             return 16;
 #endif
+#ifdef DLT_LINUX_SLL2
+        case DLT_LINUX_SLL2:
+            return 20;
+#endif
 #ifdef DLT_IPNET
         case DLT_IPNET:
             return 24;
@@ -1157,14 +1360,67 @@ datalink_size(int datalink)
 
 }
 
+bool
+is_gz_filename(const char *filename)
+{
+    // does the filename end on ".gz"?
+    char *dotpos = strrchr(filename, '.');
+    if (dotpos && (strcmp(dotpos, ".gz") == 0))
+        return true;
+    else
+        return false;
+}
+
 pcap_dumper_t *
-dump_open(const char *dumpfile)
+dump_open(const char *dumpfile, ino_t* dump_inode)
 {
     capture_info_t *capinfo;
 
     if (vector_count(capture_cfg.sources) == 1) {
+        capture_cfg.dumpfilename = dumpfile;
         capinfo = vector_first(capture_cfg.sources);
-        return pcap_dump_open(capinfo->handle, dumpfile);
+
+        FILE *fp = fopen(dumpfile,"wb+");
+        if (!fp)
+            return NULL;
+
+        struct stat sb;
+        if (fstat(fileno(fp), &sb) == -1)
+            return NULL;
+
+        if (dump_inode) {
+            // read out the files inode, allows to later check if it has changed
+            struct stat sb;
+            if (fstat(fileno(fp), &sb) == -1)
+                return NULL;
+            *dump_inode = sb.st_ino;
+        }
+
+        if (is_gz_filename(dumpfile))
+        {
+#if defined(HAVE_FOPENCOOKIE) && defined(WITH_ZLIB)
+            // create a gzip file stream out of the already opened file
+            gzFile zf = gzdopen(fileno(fp), "w");
+            if (!zf)
+                return NULL;
+
+            static cookie_io_functions_t cookiefuncs = {
+                NULL, gzip_cookie_write, NULL, gzip_cookie_close
+            };
+
+            // reroute the file access functions
+            // use the gzip write+close functions when accessing the file
+            fp = fopencookie(zf, "w", cookiefuncs);
+            if (!fp)
+                return NULL;
+#else
+            // no support for gzip compressed pcap files compiled in -> abort
+            fclose(fp);
+            return NULL;
+#endif
+        }
+
+        return pcap_dump_fopen(capinfo->handle, fp);
     }
     return NULL;
 }

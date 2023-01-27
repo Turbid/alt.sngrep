@@ -35,6 +35,9 @@
 ## Set size of pcap capture buffer in MB (default: 2)
 # set capture.buffer 2
 
+## Uncomment to enable parsing of captured HEP3 packets
+# set capture.eep on
+
 ##-----------------------------------------------------------------------------
 ## Default path in save dialog
 # set sngrep.savepath /tmp/sngrep-captures
@@ -49,7 +52,7 @@
 # set cl.defexitbutton 0/1
 
 # Set default filter on startup
-# set cl.filter INVITE
+# set filter.methods INVITE
 
 ##-----------------------------------------------------------------------------
 ## You can change the default number of columns in call list

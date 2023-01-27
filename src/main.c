@@ -57,7 +57,7 @@ usage()
            " [-k keyfile]"
 #endif
 #ifdef USE_EEP
-           " [-LH capture_url]"
+           " [-LHE capture_url]"
 #endif
            " [<match expression>] [<bpf filter>]\n\n"
            "    -h --help\t\t This usage\n"
@@ -80,6 +80,7 @@ usage()
 #ifdef USE_EEP
            "    -H --eep-send\t Homer sipcapture url (udp:X.X.X.X:XXXX)\n"
            "    -L --eep-listen\t Listen for encapsulated packets (udp:X.X.X.X:XXXX)\n"
+           "    -E --eep-parse\t Enable EEP parsing in captured packets\n"
 #endif
 #if defined(WITH_GNUTLS) || defined(WITH_OPENSSL)
            "    -k --keyfile\t RSA private keyfile to decrypt captured packets\n"
@@ -163,13 +164,14 @@ main(int argc, char* argv[])
 #ifdef USE_EEP
         { "eep-listen", required_argument, 0, 'L' },
         { "eep-send", required_argument, 0, 'H' },
+        { "eep-parse", required_argument, 0, 'E' },
 #endif
         { "quiet", no_argument, 0, 'q' },
     };
 
     // Parse command line arguments that have high priority
     opterr = 0;
-    char *options = "hVd:I:O:B:pqtW:k:crl:ivNqDL:H:Rf:F";
+    char *options = "hVd:I:O:B:pqtW:k:crl:ivNqDL:H:ERf:F";
     while ((opt = getopt_long(argc, argv, options, long_options, &idx)) != -1) {
         switch (opt) {
             case 'h':
@@ -303,6 +305,14 @@ main(int argc, char* argv[])
                 fprintf(stderr, "sngrep is not compiled with HEP/EEP support.");
                 exit(1);
 #endif
+            case 'E':
+#ifdef USE_EEP
+                setting_set_value(SETTING_CAPTURE_EEP, SETTING_ON);
+                break;
+#else
+                fprintf(stderr, "sngrep is not compiled with HEP/EEP support.");
+                exit(1);
+#endif
             case '?':
                 if (strchr(options, optopt)) {
                     fprintf(stderr, "-%c option requires an argument.\n", optopt);
@@ -316,6 +326,8 @@ main(int argc, char* argv[])
                 break;
         }
     }
+
+    setup_sigterm_handler();
 
 #if defined(WITH_GNUTLS) || defined(WITH_OPENSSL)
     // Set capture decrypt key file
@@ -346,7 +358,8 @@ main(int argc, char* argv[])
 #endif
 
     // If no device or files has been specified in command line, use default
-    if (vector_count(indevices) == 0 && vector_count(infiles) == 0) {
+    if (capture_sources_count() == 0 &&
+        vector_count(indevices) == 0 && vector_count(infiles) == 0) {
         token = strdup(device);
         token = strtok(token, ",");
         while (token) {
@@ -359,15 +372,22 @@ main(int argc, char* argv[])
     // If we have an input file, load it
     for (i = 0; i < vector_count(infiles); i++) {
         // Try to load file
-        if (capture_offline(vector_item(infiles, i), outfile) != 0)
+        if (capture_offline(vector_item(infiles, i)) != 0)
             return 1;
     }
 
     // If we have an input device, load it
     for (i = 0; i < vector_count(indevices); i++) {
         // Check if all capture data is valid
-        if (capture_online(vector_item(indevices, i), outfile) != 0)
+        if (capture_online(vector_item(indevices, i)) != 0)
             return 1;
+    }
+
+    if (outfile)
+    {
+        ino_t dump_inode;
+        pcap_dumper_t *dumper = dump_open(outfile, &dump_inode);
+        capture_set_dumper(dumper, dump_inode);
     }
 
     // Remove Input files vector
@@ -425,13 +445,13 @@ main(int argc, char* argv[])
         ui_wait_for_input();
     } else {
         setbuf(stdout, NULL);
-        while(capture_is_running()) {
+        while(capture_is_running() && !was_sigterm_received()) {
             if (!quiet)
-                printf("\rDialog count: %d", sip_calls_count());
+                printf("\rDialog count: %d", sip_calls_count_unrotated());
             usleep(500 * 1000);
         }
         if (!quiet)
-            printf("\rDialog count: %d\n", sip_calls_count());
+            printf("\rDialog count: %d\n", sip_calls_count_unrotated());
     }
 
     // Capture deinit
